@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -1177,6 +1178,202 @@ namespace AvevaIntegration
                 resultJsonPath,
                 sourceDxfPath,
                 true));
+        }
+
+        /// <summary>
+        /// Production entry point for applying one complete algorithm result.
+        /// The source drawing context is resolved next to the result JSON so
+        /// callers do not need to expose text/geometry or batch operations.
+        /// </summary>
+        [PMLNetCallable()]
+        public string ApplyAlgorithmAnnotationBatch(
+            string algorithmResultJsonPath)
+        {
+            DateTime started = DateTime.Now;
+            string logPath = (algorithmResultJsonPath ?? string.Empty) +
+                ".production.apply.log.txt";
+            string sourceDxfPath = null;
+
+            try
+            {
+                AppendProductionStep(logPath, "PREPARE_START");
+                sourceDxfPath = ResolveAlgorithmSourceDxfPath(
+                    algorithmResultJsonPath);
+                AppendProductionStep(
+                    logPath,
+                    "SOURCE_DXF_RESOLVED=" + sourceDxfPath);
+
+                // Validate the complete input before changing the drawing.
+                BatchAlgorithmData prepared = new BatchAlgorithmData();
+                LoadAllAlgorithmMoves(algorithmResultJsonPath, prepared);
+                ValidateDuplicateMoveHandles(prepared.MoveItems);
+                AppendProductionStep(
+                    logPath,
+                    "PREPARE_COMPLETE | moves=" + prepared.MoveItems.Count +
+                    " | source_dxf=" + sourceDxfPath);
+
+                AppendProductionStep(logPath, "EXECUTE_START");
+                string textResult = ApplyAllAlgorithmMoves(
+                    algorithmResultJsonPath);
+                if (textResult == null ||
+                    !textResult.StartsWith("SUCCESS", StringComparison.Ordinal))
+                {
+                    AppendProductionStep(
+                        logPath,
+                        "EXECUTE_FAILED | text=" + (textResult ?? string.Empty));
+                    return "ERROR: ApplyAlgorithmAnnotationBatch failed | " +
+                        "stage=EXECUTE_TEXT | detail=" + textResult +
+                        " | log=" + logPath;
+                }
+
+                // This single call performs geometry precheck, mutation,
+                // post-apply verification and rollback on failure.
+                string geometryResult = ProcessAllAlgorithmAnnotationGeometry(
+                    algorithmResultJsonPath,
+                    sourceDxfPath,
+                    true);
+                if (geometryResult == null ||
+                    !geometryResult.StartsWith("SUCCESS", StringComparison.Ordinal))
+                {
+                    AppendProductionStep(
+                        logPath,
+                        "VERIFY_FAILED | geometry=" +
+                        (geometryResult ?? string.Empty));
+                    return "ERROR: ApplyAlgorithmAnnotationBatch failed | " +
+                        "stage=VERIFY | detail=" + geometryResult +
+                        " | log=" + logPath;
+                }
+
+                AppendProductionStep(
+                    logPath,
+                    "EXECUTE_COMPLETE | text=SUCCESS | geometry=SUCCESS");
+                AppendProductionStep(
+                    logPath,
+                    "VERIFY_COMPLETE | result=SUCCESS");
+                AppendProductionStep(
+                    logPath,
+                    "COMPLETE | elapsed_ms=" +
+                    (int)(DateTime.Now - started).TotalMilliseconds);
+                return "SUCCESS | stage=COMPLETE | text=SUCCESS | geometry=SUCCESS" +
+                    " | log=" + logPath;
+            }
+            catch (Exception ex)
+            {
+                AppendProductionStep(
+                    logPath,
+                    "FAILED | stage=PREPARE | error=" + ex.Message);
+                return "ERROR: ApplyAlgorithmAnnotationBatch failed | " +
+                    "stage=PREPARE | message=" + ex.Message +
+                    " | log=" + logPath;
+            }
+        }
+
+        private static string ResolveAlgorithmSourceDxfPath(
+            string algorithmResultJsonPath)
+        {
+            if (string.IsNullOrEmpty(algorithmResultJsonPath))
+            {
+                throw new InvalidDataException("algorithmResultJsonPath is empty");
+            }
+
+            string directory = Path.GetDirectoryName(
+                Path.GetFullPath(algorithmResultJsonPath));
+            string baseName = Path.GetFileNameWithoutExtension(
+                algorithmResultJsonPath);
+            string suffix = "_algorithm_result";
+            if (baseName.EndsWith(
+                suffix,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                baseName = baseName.Substring(
+                    0,
+                    baseName.Length - suffix.Length);
+            }
+
+            string[] preferredNames = new string[]
+            {
+                baseName + "_algorithm_input.dxf",
+                baseName + "_planned.dxf",
+                baseName + ".source.dxf",
+                baseName + ".dxf"
+            };
+            List<string> candidates = new List<string>();
+            int index = 0;
+            while (index < preferredNames.Length)
+            {
+                string preferredPath = Path.Combine(
+                    directory ?? string.Empty,
+                    preferredNames[index]);
+                if (File.Exists(preferredPath))
+                {
+                    candidates.Add(Path.GetFullPath(preferredPath));
+                }
+                index++;
+            }
+
+            string[] allDxfFiles = Directory.GetFiles(
+                directory ?? string.Empty,
+                "*.dxf");
+            Array.Sort(allDxfFiles, StringComparer.OrdinalIgnoreCase);
+            index = 0;
+            while (index < allDxfFiles.Length)
+            {
+                string fullPath = Path.GetFullPath(allDxfFiles[index]);
+                bool alreadyIncluded = false;
+                int candidateIndex = 0;
+                while (candidateIndex < candidates.Count)
+                {
+                    if (string.Equals(
+                        candidates[candidateIndex],
+                        fullPath,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        alreadyIncluded = true;
+                        break;
+                    }
+                    candidateIndex++;
+                }
+                if (!alreadyIncluded)
+                {
+                    candidates.Add(fullPath);
+                }
+                index++;
+            }
+
+            if (candidates.Count > 1)
+            {
+                // Keep the full candidate list in the production log while
+                // preserving the required priority order for selection.
+                string candidateLogPath = algorithmResultJsonPath +
+                    ".production.apply.log.txt";
+                AppendProductionStep(
+                    candidateLogPath,
+                    "SOURCE_DXF_CANDIDATES=" + string.Join(
+                        "|",
+                        candidates.ToArray()));
+            }
+            if (candidates.Count > 0)
+            {
+                return candidates[0];
+            }
+            throw new FileNotFoundException(
+                "source drawing context DXF not found",
+                Path.Combine(
+                    directory ?? string.Empty,
+                    baseName + "_algorithm_input.dxf"));
+        }
+
+        private static void AppendProductionStep(
+            string logPath,
+            string step)
+        {
+            using (StreamWriter writer = new StreamWriter(
+                logPath,
+                true,
+                new UTF8Encoding(false)))
+            {
+                writer.WriteLine("PIPELINE=" + step);
+            }
         }
 
         [PMLNetCallable()]
@@ -3130,6 +3327,7 @@ namespace AvevaIntegration
 
                         if (TryFindMatchingAlgorithmText(
                             drafting,
+                            item.Data.Handle,
                             item.Data.OriginX,
                             item.Data.OriginY,
                             item.Data.Text,
@@ -3153,6 +3351,7 @@ namespace AvevaIntegration
 
                             if (TryFindMatchingAlgorithmText(
                                 drafting,
+                                item.Data.Handle,
                                 expectedMovedX,
                                 expectedMovedY,
                                 item.Data.Text,
@@ -3167,6 +3366,7 @@ namespace AvevaIntegration
                             }
                             else if (TryFindMatchingAlgorithmText(
                                 drafting,
+                                item.Data.Handle,
                                 item.Data.NewX,
                                 item.Data.NewY,
                                 item.Data.Text,
@@ -3422,6 +3622,7 @@ namespace AvevaIntegration
                         MarText text;
                         if (TryFindMatchingAlgorithmText(
                             drafting,
+                            item.Data.Handle,
                             item.Data.OriginX,
                             item.Data.OriginY,
                             item.Data.Text,
@@ -3436,6 +3637,7 @@ namespace AvevaIntegration
                         }
                         else if (TryFindMatchingAlgorithmText(
                             drafting,
+                            item.Data.Handle,
                             item.Data.OriginX + item.Data.DeltaX,
                             item.Data.OriginY + item.Data.DeltaY,
                             item.Data.Text,
@@ -3450,6 +3652,7 @@ namespace AvevaIntegration
                         }
                         else if (TryFindMatchingAlgorithmText(
                             drafting,
+                            item.Data.Handle,
                             item.Data.NewX,
                             item.Data.NewY,
                             item.Data.Text,
@@ -4013,6 +4216,7 @@ namespace AvevaIntegration
                 string textResult;
                 if (TryFindMatchingAlgorithmText(
                     drafting,
+                    item.Move.Data.Handle,
                     item.Move.Data.NewX,
                     item.Move.Data.NewY,
                     item.Move.Data.Text,
@@ -4034,6 +4238,7 @@ namespace AvevaIntegration
                     string originResult;
                     if (TryFindMatchingAlgorithmText(
                         drafting,
+                        item.Move.Data.Handle,
                         item.Move.Data.OriginX,
                         item.Move.Data.OriginY,
                         item.Move.Data.Text,
@@ -5927,6 +6132,7 @@ namespace AvevaIntegration
 
         private static bool TryFindMatchingAlgorithmText(
             MarDrafting drafting,
+            string algorithmHandle,
             double x,
             double y,
             string expectedText,
@@ -5940,6 +6146,18 @@ namespace AvevaIntegration
 
             try
             {
+                if (TryResolveTextByAlgorithmHandle(
+                    drafting,
+                    algorithmHandle,
+                    expectedText,
+                    out handle,
+                    out text,
+                    out detail))
+                {
+                    return true;
+                }
+                string handleDetail = detail;
+
                 DxfPoint[] probes = new DxfPoint[]
                 {
                     new DxfPoint(x, y),
@@ -5953,6 +6171,8 @@ namespace AvevaIntegration
                     new DxfPoint(x, y - 0.50)
                 };
                 StringBuilder diagnostics = new StringBuilder();
+                diagnostics.Append(handleDetail);
+                diagnostics.Append("TEXT_MATCH_MODE=POSITION_FALLBACK;");
                 int probeIndex = 0;
                 while (probeIndex < probes.Length)
                 {
@@ -6020,7 +6240,27 @@ namespace AvevaIntegration
                     probeIndex++;
                     EnsureParserIndexAdvanced(oldProbeIndex, probeIndex);
                 }
+                MarElementHandle rectangleHandle;
+                MarText rectangleText;
+                string rectangleDetail;
+                if (TryFindMatchingTextInRectangle(
+                    drafting,
+                    x,
+                    y,
+                    12.0,
+                    expectedText,
+                    algorithmHandle,
+                    out rectangleHandle,
+                    out rectangleText,
+                    out rectangleDetail))
+                {
+                    handle = rectangleHandle;
+                    text = rectangleText;
+                    detail = diagnostics.ToString() + rectangleDetail;
+                    return true;
+                }
                 detail = diagnostics.ToString();
+                detail += rectangleDetail;
                 return false;
             }
             catch (Exception ex)
@@ -6052,6 +6292,224 @@ namespace AvevaIntegration
                 detail += "ERROR: " + ex.Message;
                 return false;
             }
+        }
+
+        private static bool TryResolveTextByAlgorithmHandle(
+            MarDrafting drafting,
+            string algorithmHandle,
+            string expectedText,
+            out MarElementHandle handle,
+            out MarText text,
+            out string detail)
+        {
+            handle = null;
+            text = null;
+            detail = "TEXT_MATCH_MODE=HANDLE;";
+            if (string.IsNullOrEmpty(algorithmHandle))
+            {
+                detail += "handle=<empty>;fallback=true;";
+                return false;
+            }
+
+            string[] methodNames = new string[]
+            {
+                "ElementGet", "ElementHandleGet", "TextGet"
+            };
+            int methodIndex = 0;
+            while (methodIndex < methodNames.Length)
+            {
+                MethodInfo[] methods = drafting.GetType().GetMethods();
+                int index = 0;
+                while (index < methods.Length)
+                {
+                    MethodInfo method = methods[index];
+                    if (string.Equals(method.Name, methodNames[methodIndex],
+                        StringComparison.Ordinal) &&
+                        method.GetParameters().Length == 1)
+                    {
+                        object value = null;
+                        try
+                        {
+                            ParameterInfo parameter = method.GetParameters()[0];
+                            if (parameter.ParameterType == typeof(string))
+                            {
+                                value = method.Invoke(drafting,
+                                    new object[] { algorithmHandle });
+                            }
+                            else if (parameter.ParameterType == typeof(int))
+                            {
+                                value = method.Invoke(drafting,
+                                    new object[] { Convert.ToInt32(
+                                        algorithmHandle, 16) });
+                            }
+                            MarElementHandle candidate =
+                                value as MarElementHandle;
+                            if (candidate != null)
+                            {
+                                MarText candidateText =
+                                    drafting.TextPropertiesGet(candidate);
+                                string actual = candidateText == null
+                                    ? string.Empty : candidateText.String;
+                                if (string.Equals(actual, expectedText,
+                                    StringComparison.Ordinal))
+                                {
+                                    handle = candidate;
+                                    text = candidateText;
+                                    detail += "handle=" + algorithmHandle +
+                                        "|actual=" + actual + "|match=true;";
+                                    return true;
+                                }
+                                detail += "handle=" + algorithmHandle +
+                                    "|actual=" + actual + "|match=false;";
+                                if (candidateText != null) candidateText.Dispose();
+                                candidate.Dispose();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            detail += "handle_lookup_error=" + ex.Message + ";";
+                        }
+                    }
+                    index++;
+                }
+                methodIndex++;
+            }
+            detail += "fallback=true;";
+            return false;
+        }
+
+        private static bool TryFindMatchingTextInRectangle(
+            MarDrafting drafting,
+            double x,
+            double y,
+            double radius,
+            string expectedText,
+            string preferredHandle,
+            out MarElementHandle handle,
+            out MarText text,
+            out string detail)
+        {
+            handle = null;
+            text = null;
+            detail = "TEXT_MATCH_MODE=RECTANGLE_FALLBACK|radius=" +
+                radius + ";";
+            List<TextMatchCandidate> matches =
+                new List<TextMatchCandidate>();
+
+            using (MarRectanglePlanar rectangle =
+                new MarRectanglePlanar(
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius))
+            using (MarCaptureRegionPlanar region =
+                new MarCaptureRegionPlanar())
+            {
+                region.SetRectangle(rectangle);
+                region.SetInside();
+                region.SetNoCut();
+                MarElementHandle[] captured = drafting.TextCapture(region);
+
+                if (captured != null)
+                {
+                    int index = 0;
+                    while (index < captured.Length)
+                    {
+                        MarElementHandle candidate = captured[index];
+                        MarText candidateText = null;
+                        if (candidate != null)
+                        {
+                            try
+                            {
+                                candidateText = drafting.TextPropertiesGet(candidate);
+                                string actual = candidateText == null
+                                    ? string.Empty
+                                    : candidateText.String;
+                                if (string.Equals(
+                                    actual,
+                                    expectedText,
+                                    StringComparison.Ordinal))
+                                {
+                                    double distance = double.MaxValue;
+                                    if (candidateText.Position != null)
+                                    {
+                                        using (MarPointPlanar position =
+                                            candidateText.Position)
+                                        {
+                                            double dx = position.X - x;
+                                            double dy = position.Y - y;
+                                            distance = Math.Sqrt(
+                                                dx * dx + dy * dy);
+                                        }
+                                    }
+                                    matches.Add(new TextMatchCandidate(
+                                        candidate,
+                                        candidateText,
+                                        distance,
+                                        !string.IsNullOrEmpty(preferredHandle) &&
+                                        string.Equals(
+                                            candidate.handle.ToString(),
+                                            preferredHandle,
+                                            StringComparison.OrdinalIgnoreCase)));
+                                    candidate = null;
+                                    candidateText = null;
+                                }
+                            }
+                            finally
+                            {
+                                if (candidateText != null)
+                                {
+                                    candidateText.Dispose();
+                                }
+                                if (candidate != null)
+                                {
+                                    candidate.Dispose();
+                                }
+                            }
+                        }
+                        index++;
+                    }
+                }
+            }
+
+            matches.Sort(CompareTextMatchCandidates);
+            detail += "candidate_count=" + matches.Count + ";";
+            if (matches.Count == 1 ||
+                (matches.Count > 1 && matches[0].PreferredHandle))
+            {
+                TextMatchCandidate selected = matches[0];
+                handle = selected.Handle;
+                text = selected.Text;
+                detail += "selected_handle=" + handle.handle +
+                    "|selected_distance=" + selected.Distance + ";";
+                int index = 1;
+                while (index < matches.Count)
+                {
+                    matches[index].Dispose();
+                    index++;
+                }
+                return true;
+            }
+
+            int disposeIndex = 0;
+            while (disposeIndex < matches.Count)
+            {
+                matches[disposeIndex].Dispose();
+                disposeIndex++;
+            }
+            detail += "result=AMBIGUOUS_OR_NOT_FOUND;";
+            return false;
+        }
+
+        private static int CompareTextMatchCandidates(
+            TextMatchCandidate left,
+            TextMatchCandidate right)
+        {
+            if (left.PreferredHandle != right.PreferredHandle)
+            {
+                return left.PreferredHandle ? -1 : 1;
+            }
+            return left.Distance.CompareTo(right.Distance);
         }
 
         private static void ApplySavedAlgorithmMove(
@@ -6545,6 +7003,40 @@ namespace AvevaIntegration
             public double[] LeaderStart;
             public double[] LeaderEnd;
             public bool NeedsPlan;
+        }
+
+        private sealed class TextMatchCandidate
+        {
+            public MarElementHandle Handle;
+            public MarText Text;
+            public double Distance;
+            public bool PreferredHandle;
+
+            public TextMatchCandidate(
+                MarElementHandle handle,
+                MarText text,
+                double distance,
+                bool preferredHandle)
+            {
+                Handle = handle;
+                Text = text;
+                Distance = distance;
+                PreferredHandle = preferredHandle;
+            }
+
+            public void Dispose()
+            {
+                if (Text != null)
+                {
+                    Text.Dispose();
+                    Text = null;
+                }
+                if (Handle != null)
+                {
+                    Handle.Dispose();
+                    Handle = null;
+                }
+            }
         }
 
         private sealed class BatchAlgorithmData
