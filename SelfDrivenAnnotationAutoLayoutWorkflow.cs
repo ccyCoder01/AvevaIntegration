@@ -236,7 +236,12 @@ namespace AvevaIntegration
                 return;
             }
             uiStepScheduled = true;
-            dispatcher.Post(ApplyNextBatchOnOwnerThread);
+            Log("event=NEXT_BATCH_SCHEDULED | batch=" +
+                (batchStart / AnnotationAutoLayoutPlan.BatchSize + 1) +
+                "/" + totalBatches + " | batch_start=" + batchStart +
+                " | operation_in_flight=false");
+            Log("event=MAIN_THREAD_POSTED | stage=" + stage);
+            dispatcher.PostDeferred(ApplyNextBatchOnOwnerThread);
         }
 
         private void ApplyNextBatchOnOwnerThread()
@@ -250,6 +255,9 @@ namespace AvevaIntegration
             uiStepRunning = true;
             try
             {
+                Log("event=NEXT_BATCH_STARTED | batch=" +
+                    (batchStart / AnnotationAutoLayoutPlan.BatchSize + 1) +
+                    "/" + totalBatches + " | stage=MovingText");
                 if (IsCancellationRequested())
                 {
                     CompleteCancelledOnOwnerThread();
@@ -297,25 +305,37 @@ namespace AvevaIntegration
                 }
                 entry.RepaintOnOwnerThread("AFTER_GEOMETRY_APPLY");
                 stage = "VerifyingBatch";
+                Log("event=VERIFY_STARTED | batch=" + batchNumber + "/" +
+                    totalBatches);
                 string previewResult =
                     entry.PreviewAlgorithmAnnotationGeometryBatch(
                         resultJsonPath,
                         dxfPath,
                         batchStart,
                         AnnotationAutoLayoutPlan.BatchSize);
-                if (!IsSuccess(previewResult))
+                if (!IsSuccessfulAppliedVerification(previewResult))
                 {
                     FailOnOwnerThread("preview failed | " + previewResult);
                     return;
                 }
+                Log("event=VERIFY_COMPLETED | batch=" + batchNumber + "/" +
+                    totalBatches + " | result=" +
+                    previewResult.Replace("\r", " ").Replace("\n", " "));
+                Log("event=VERIFY_ACCEPTED | batch=" + batchNumber + "/" +
+                    totalBatches + " | already_applied=true");
                 batchStart += AnnotationAutoLayoutPlan.BatchSize;
-                PublishOnOwnerThread();
                 if (batchStart < moveCount)
                 {
+                    batchNumber = batchStart / AnnotationAutoLayoutPlan.BatchSize + 1;
+                    stage = "MovingText";
+                    message = "正在处理第 " + batchNumber + "/" +
+                        totalBatches + " 批";
+                    PublishOnOwnerThread();
                     ScheduleNextUiStep();
                 }
                 else
                 {
+                    PublishOnOwnerThread();
                     CompleteOnOwnerThread();
                 }
             }
@@ -415,6 +435,47 @@ namespace AvevaIntegration
         {
             return value != null && value.StartsWith("SUCCESS",
                 StringComparison.Ordinal);
+        }
+
+        private static bool IsSuccessfulAppliedVerification(string value)
+        {
+            if (!IsSuccess(value))
+            {
+                return false;
+            }
+            int processed;
+            int ready;
+            int alreadyApplied;
+            int failed;
+            int inconclusive;
+            return TryGetResultInt(value, "processed", out processed) &&
+                TryGetResultInt(value, "ready", out ready) &&
+                TryGetResultInt(value, "already_applied", out alreadyApplied) &&
+                TryGetResultInt(value, "failed", out failed) &&
+                TryGetResultInt(value, "inconclusive", out inconclusive) &&
+                processed > 0 && failed == 0 && inconclusive == 0 &&
+                alreadyApplied == processed;
+        }
+
+        private static bool TryGetResultInt(
+            string value,
+            string key,
+            out int result)
+        {
+            result = 0;
+            string marker = key + "=";
+            int start = value.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return false;
+            }
+            start += marker.Length;
+            int end = value.IndexOf(" | ", start, StringComparison.Ordinal);
+            string text = end < 0
+                ? value.Substring(start)
+                : value.Substring(start, end - start);
+            return int.TryParse(text, NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out result);
         }
 
         private void Log(string value)

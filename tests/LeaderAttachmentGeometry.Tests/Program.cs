@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Reflection;
 
 namespace AvevaIntegration
 {
@@ -9,6 +11,9 @@ namespace AvevaIntegration
 
         private static void Main()
         {
+            RunDxfMtextNormalizationTests();
+            RunGlobalAssociationTests();
+            RunSelfDrivenWorkflowRegressionChecks();
             AssertTrue("probe invariants pass",
                 AnnotationAutoLayoutDispatcherProbeLogic.Passed(
                     12, 12, 12, false, false, true, 19));
@@ -106,6 +111,116 @@ namespace AvevaIntegration
             AssertBatchPlan(23, new int[] { 5, 5, 5, 5, 3 });
 
             Console.WriteLine("PASS: " + testsRun + " assertions");
+        }
+
+        private static void RunSelfDrivenWorkflowRegressionChecks()
+        {
+            string dispatcherSource = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\MarineUiDispatcher.cs"));
+            string workflowSource = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\SelfDrivenAnnotationAutoLayoutWorkflow.cs"));
+            AssertTrue("dispatcher has deferred post",
+                dispatcherSource.IndexOf("PostDeferred", StringComparison.Ordinal) >= 0);
+            AssertTrue("workflow uses deferred next batch post",
+                workflowSource.IndexOf("dispatcher.PostDeferred(ApplyNextBatchOnOwnerThread)",
+                    StringComparison.Ordinal) >= 0);
+            AssertTrue("verify accepts already applied result",
+                workflowSource.IndexOf("VERIFY_ACCEPTED", StringComparison.Ordinal) >= 0);
+        }
+
+        private static void RunGlobalAssociationTests()
+        {
+            System.Collections.Generic.List<GlobalAnnotationGeometryMatcher.Annotation> annotations =
+                new System.Collections.Generic.List<GlobalAnnotationGeometryMatcher.Annotation>();
+            annotations.Add(new GlobalAnnotationGeometryMatcher.Annotation {
+                Handle = "28", Text = "A", IsMove = true, X = 2.14872, Y = 0.0 });
+            annotations.Add(new GlobalAnnotationGeometryMatcher.Annotation {
+                Handle = "5E", Text = "B", IsMove = true, X = 0.41598, Y = 0.0 });
+            annotations[0].OriginCenterPresent = true;
+            annotations[1].OriginCenterPresent = true;
+            System.Collections.Generic.List<GlobalAnnotationGeometryMatcher.GeometryPair> geometry =
+                new System.Collections.Generic.List<GlobalAnnotationGeometryMatcher.GeometryPair>();
+            geometry.Add(new GlobalAnnotationGeometryMatcher.GeometryPair {
+                UnderlineHandle = "1D16", LeaderHandle = "1D17", X = 0.0, Y = 0.0 });
+            geometry.Add(new GlobalAnnotationGeometryMatcher.GeometryPair {
+                UnderlineHandle = "1D7C", LeaderHandle = "1D7D", X = 4.27866, Y = 0.0 });
+            GlobalAnnotationGeometryMatcher.Result result =
+                GlobalAnnotationGeometryMatcher.Match(annotations, geometry);
+            AssertTrue("global matching succeeds", string.IsNullOrEmpty(result.Failure));
+            AssertTrue("global matching unique", result.IsUnique);
+            AssertTrue("global matching resolves collision",
+                result.Assignments[0].Geometry.UnderlineHandle == "1D7C" &&
+                result.Assignments[1].Geometry.UnderlineHandle == "1D16");
+
+            annotations.Add(new GlobalAnnotationGeometryMatcher.Annotation {
+                Handle = "2D", Text = "C", IsMove = false, X = 5.0, Y = 0.0 });
+            annotations[2].OriginCenterPresent = true;
+            geometry.Add(new GlobalAnnotationGeometryMatcher.GeometryPair {
+                UnderlineHandle = "1D1A", LeaderHandle = "1D1B", X = 5.0, Y = 0.0 });
+            result = GlobalAnnotationGeometryMatcher.Match(annotations, geometry);
+            AssertTrue("reservation participates", result.Assignments.Count == 3);
+            AssertTrue("reservation flag retained",
+                !result.Assignments[1].Annotation.IsMove);
+            GlobalAnnotationGeometryMatcher.Annotation missing =
+                new GlobalAnnotationGeometryMatcher.Annotation {
+                    Handle = "MISSING", Text = "M", IsMove = false,
+                    X = 1.0, Y = 1.0, OriginCenterPresent = false };
+            annotations[1] = missing;
+            result = GlobalAnnotationGeometryMatcher.Match(annotations, geometry);
+            AssertTrue("missing origin is rejected",
+                result.Failure == "GLOBAL_ASSOCIATION_ORIGIN_CENTER_MISSING");
+        }
+
+        private static void RunDxfMtextNormalizationTests()
+        {
+            AppDomain.CurrentDomain.AssemblyResolve += ResolveAvevaAssembly;
+            string assemblyPath = Path.GetFullPath(Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "..\\..\\..\\..\\..\\bin\\Debug\\AvevaIntegrationBeautify.dll"));
+            Assembly assembly = Assembly.LoadFrom(assemblyPath);
+            Type entryType = assembly.GetType("AvevaIntegration.DemoEntry");
+            MethodInfo isText = entryType.GetMethod(
+                "IsDxfAnnotationTextEntity",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            MethodInfo normalize = entryType.GetMethod(
+                "NormalizeDxfAnnotationText",
+                BindingFlags.Static | BindingFlags.NonPublic);
+
+            AssertTrue("TEXT entity accepted",
+                (bool)isText.Invoke(null, new object[] { "TEXT" }));
+            AssertTrue("MTEXT entity accepted",
+                (bool)isText.Invoke(null, new object[] { "mtext" }));
+            AssertTrue("LINE entity rejected",
+                !(bool)isText.Invoke(null, new object[] { "LINE" }));
+            AssertTrue("formatted MTEXT normalized",
+                (string)normalize.Invoke(null, new object[] {
+                    "MTEXT", "{\\fAnyFont|b0|i0;103P-CLH0001-003H}" }) ==
+                    "103P-CLH0001-003H");
+            AssertTrue("plain MTEXT preserved",
+                (string)normalize.Invoke(null, new object[] {
+                    "MTEXT", "103P-CLH0001-006" }) ==
+                    "103P-CLH0001-006");
+            AssertTrue("TEXT value preserved",
+                (string)normalize.Invoke(null, new object[] {
+                    "TEXT", "103P-CLH0001-003H" }) ==
+                    "103P-CLH0001-003H");
+            AssertTrue("MTEXT paragraph decoded",
+                (string)normalize.Invoke(null, new object[] {
+                    "MTEXT", "A\\PB" }) == "A\nB");
+            AssertTrue("null text normalized to empty",
+                (string)normalize.Invoke(null, new object[] { "MTEXT", null }) ==
+                    string.Empty);
+        }
+
+        private static Assembly ResolveAvevaAssembly(
+            object sender,
+            ResolveEventArgs args)
+        {
+            string name = new AssemblyName(args.Name).Name;
+            string path = Path.Combine("D:\\CodeNetSpace\\AvevaSdk", name + ".dll");
+            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
         }
 
         private static OrientedTextRectangle AxisAlignedRectangle(

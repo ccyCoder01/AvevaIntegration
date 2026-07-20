@@ -62,6 +62,19 @@ namespace AvevaIntegration
             }
         }
 
+        internal void PostDeferred(MethodInvoker action)
+        {
+            if (action == null)
+            {
+                throw new ArgumentNullException("action");
+            }
+            if (disposed || control.IsDisposed || control.Handle == IntPtr.Zero)
+            {
+                return;
+            }
+            control.BeginInvoke(action);
+        }
+
         public void Dispose()
         {
             if (disposed)

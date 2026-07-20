@@ -11,5 +11,6 @@
     <Compile Include="..\..\AnnotationAutoLayoutPlan.cs" Link="AnnotationAutoLayoutPlan.cs" />
     <Compile Include="..\..\AnnotationAutoLayoutDispatcherProbeLogic.cs" Link="AnnotationAutoLayoutDispatcherProbeLogic.cs" />
     <Compile Include="..\..\AnnotationAutoLayoutDispatcherProbeState.cs" Link="AnnotationAutoLayoutDispatcherProbeState.cs" />
+    <Compile Include="..\..\GlobalAnnotationGeometryMatcher.cs" Link="GlobalAnnotationGeometryMatcher.cs" />
   </ItemGroup>
 </Project>

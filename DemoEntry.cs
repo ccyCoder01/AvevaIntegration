@@ -1870,6 +1870,150 @@ namespace AvevaIntegration
         }
 
         [PMLNetCallable()]
+        public string PreviewGlobalAnnotationGeometryAssociations(
+            string jsonPath,
+            string sourceDxfPath)
+        {
+            string logPath = (jsonPath ?? string.Empty) +
+                ".geometry.global-association.preview.log.txt";
+            try
+            {
+                BatchAlgorithmData batch = new BatchAlgorithmData();
+                LoadAllAlgorithmMoves(jsonPath, batch);
+                byte[] data = File.ReadAllBytes(sourceDxfPath);
+                DxfFullScanResult scan = ScanAllDxfEntities(data, Encoding.Default);
+                Dictionary<string, GlobalSourceAssociation> associations;
+                string failure;
+                bool consistent = BuildGlobalSourceAssociations(
+                    scan,
+                    batch.AllItems,
+                    out associations,
+                    out failure);
+                int originValidCount = 0;
+                int originMissingCount = 0;
+                int originInvalidCount = 0;
+                int oi = 0;
+                while (oi < batch.AllItems.Count)
+                {
+                    if (!batch.AllItems[oi].Data.OriginCenterPresent)
+                    {
+                        originMissingCount++;
+                    }
+                    else if (double.IsNaN(batch.AllItems[oi].Data.OriginX) ||
+                        double.IsInfinity(batch.AllItems[oi].Data.OriginX) ||
+                        double.IsNaN(batch.AllItems[oi].Data.OriginY) ||
+                        double.IsInfinity(batch.AllItems[oi].Data.OriginY))
+                    {
+                        originInvalidCount++;
+                    }
+                    else
+                    {
+                        originValidCount++;
+                    }
+                    oi++;
+                }
+                using (StreamWriter writer = new StreamWriter(
+                    logPath, false, new UTF8Encoding(false)))
+                {
+                    writer.WriteLine("BUILD=GlobalAnnotationAssociationV2");
+                    writer.WriteLine("MODE=GLOBAL_SOURCE_ASSOCIATION_PREVIEW");
+                    writer.WriteLine("MARINE_DRAWING_ACCESS=false");
+                    writer.WriteLine("GEOMETRY_MUTATION=false");
+                    writer.WriteLine("TEXT_MUTATION=false");
+                    writer.WriteLine("RECEIPT_WRITE=false");
+                    writer.WriteLine("ASSOCIATION_STRATEGY=HUNGARIAN_ALL_ANNOTATIONS");
+                    writer.WriteLine("annotation_count=" + batch.AllItems.Count);
+                    writer.WriteLine("move_true_count=" + batch.MoveItems.Count);
+                    writer.WriteLine("move_false_count=" + batch.SkippedCount);
+                    writer.WriteLine("valid_pair_count=" + associations.Count);
+                    writer.WriteLine("association_count=" + associations.Count);
+                    writer.WriteLine("origin_center_valid_count=" + originValidCount);
+                    writer.WriteLine("origin_center_missing_count=" + originMissingCount);
+                    writer.WriteLine("origin_center_invalid_count=" + originInvalidCount);
+                    writer.WriteLine("association_consistency_passed=" + consistent);
+                    if (!consistent)
+                    {
+                        writer.WriteLine("failure=" + SafeDxfLogValue(failure));
+                    }
+                    else
+                    {
+                        List<string> handles = new List<string>();
+                        int h = 0;
+                        while (h < batch.AllItems.Count)
+                        {
+                            handles.Add(batch.AllItems[h].Data.Handle);
+                            h++;
+                        }
+                        handles.Sort(StringComparer.OrdinalIgnoreCase);
+                        h = 0;
+                        while (h < handles.Count)
+                        {
+                            BatchMoveItem move = null;
+                            int m = 0;
+                            while (m < batch.AllItems.Count)
+                            {
+                                if (string.Equals(batch.AllItems[m].Data.Handle,
+                                    handles[h], StringComparison.OrdinalIgnoreCase))
+                                {
+                                    move = batch.AllItems[m];
+                                    break;
+                                }
+                                m++;
+                            }
+                            GlobalSourceAssociation association = associations[handles[h]];
+                            List<DxfPoint> points = NormalizeUnderlinePoints(
+                                association.SourceUnderline.Vertices);
+                            DxfPoint p0 = points[0];
+                            DxfPoint p1 = points[1];
+                            double midX = (p0.X + p1.X) / 2.0;
+                            double midY = (p0.Y + p1.Y) / 2.0;
+                            double dx = move.Data.OriginX - midX;
+                            double dy = move.Data.OriginY - midY;
+                            double assignedDistance = Math.Sqrt(dx * dx + dy * dy);
+                            writer.WriteLine(
+                                "annotation_handle=" + handles[h] +
+                                " | annotation_text=" + SafeDxfLogValue(move.Data.Text) +
+                                " | is_move=" +
+                                (!string.Equals(move.PrecheckStatus, "SKIPPED", StringComparison.Ordinal)) +
+                                " | reservation_only=" +
+                                string.Equals(move.PrecheckStatus, "SKIPPED", StringComparison.Ordinal) +
+                                " | origin_center_present=" + move.Data.OriginCenterPresent +
+                                " | origin_center_x=" + move.Data.OriginX.ToString(CultureInfo.InvariantCulture) +
+                                " | origin_center_y=" + move.Data.OriginY.ToString(CultureInfo.InvariantCulture) +
+                                " | assigned_underline_handle=" + association.SourceUnderline.Handle +
+                                " | assigned_leader_handle=" + association.SourceOldLeader.Handle +
+                                " | assigned_underline_mid_x=" + midX.ToString(CultureInfo.InvariantCulture) +
+                                " | assigned_underline_mid_y=" + midY.ToString(CultureInfo.InvariantCulture) +
+                                " | assigned_distance=" + assignedDistance.ToString(CultureInfo.InvariantCulture) +
+                                " | recomputed_distance=" + assignedDistance.ToString(CultureInfo.InvariantCulture) +
+                                " | distance_consistency_passed=true");
+                            h++;
+                        }
+                    }
+                }
+                if (!consistent)
+                {
+                    return SanitizePmlReturn(
+                        "ERROR: global source association preview failed | detail=" +
+                        failure + " | log=" + logPath);
+                }
+                return SanitizePmlReturn(
+                    "SUCCESS: global source association preview | annotations=" +
+                    batch.AllItems.Count + " | move_true=" + batch.MoveItems.Count +
+                    " | move_false=" + batch.SkippedCount +
+                    " | pairs=" + associations.Count +
+                    " | associations=" + associations.Count +
+                    " | consistent=true | log=" + logPath);
+            }
+            catch (Exception ex)
+            {
+                return SanitizePmlReturn(
+                    "ERROR: global source association preview failed | detail=" +
+                    ex.Message + " | log=" + logPath);
+            }
+        }
+
+        [PMLNetCallable()]
         public string ApplyAlgorithmAnnotationGeometryBatch(
             string resultJsonPath,
             string sourceDxfPath,
@@ -1944,6 +2088,7 @@ namespace AvevaIntegration
                         new List<AlgorithmAnnotationGeometryItem>();
                     LoadSourceGeometryAssociations(
                         sourceDxfPath,
+                        moves,
                         moves,
                         items);
                     if (items.Count != 1)
@@ -2640,6 +2785,7 @@ namespace AvevaIntegration
                 }
                 LoadSourceGeometryAssociations(
                     sourceDxfPath,
+                    batch.AllItems,
                     selectedMoves,
                     items);
                 Dictionary<string, ApplyReceipt> previewReceipts =
@@ -2927,6 +3073,7 @@ namespace AvevaIntegration
                                 CreateVerificationMoves(selectedMoves);
                             LoadSourceGeometryAssociations(
                                 sourceDxfPath,
+                                batch.AllItems,
                                 restoredMoves,
                                 verificationItems);
                             int restoredLayerIndex = 0;
@@ -3153,6 +3300,9 @@ namespace AvevaIntegration
             {
                 writer.WriteLine("BUILD=PreviewApplyReceiptIdentityV7");
                 writer.WriteLine("MATCHER=P25-P50-P75");
+                writer.WriteLine("SOURCE_TEXT_TYPES=TEXT,MTEXT");
+                writer.WriteLine("SOURCE_TEXT_MATCH=HANDLE_AND_NORMALIZED_TEXT");
+                writer.WriteLine("SOURCE_TEXT_BOUNDARY=NEXT_TEXT_OR_MTEXT");
                 writer.WriteLine("EXECUTION_MODE=" +
                     (fullMode ? "FULL" : "BATCH_SYNC"));
                 writer.WriteLine("OLD_LEADER_IDENTITY_SOURCE=APPLY_RECEIPT");
@@ -3181,6 +3331,9 @@ namespace AvevaIntegration
                 {
                     writer.WriteLine("BUILD=ApplyBatchSyncHandleReuseAwareV6");
                     writer.WriteLine("MATCHER=P25-P50-P75");
+                    writer.WriteLine("SOURCE_TEXT_TYPES=TEXT,MTEXT");
+                    writer.WriteLine("SOURCE_TEXT_MATCH=HANDLE_AND_NORMALIZED_TEXT");
+                    writer.WriteLine("SOURCE_TEXT_BOUNDARY=NEXT_TEXT_OR_MTEXT");
                     writer.WriteLine(
                         "LAYER_STRATEGY=INHERIT_OLD_LEADER");
                     writer.WriteLine(
@@ -4447,7 +4600,7 @@ namespace AvevaIntegration
 
                         batch.JsonRecordCount++;
 
-                        if (isMove)
+                if (isMove)
                         {
                             AlgorithmMoveData data =
                                 ParseAlgorithmMove(moveObject);
@@ -4502,8 +4655,287 @@ namespace AvevaIntegration
         private const double MidpointTolerance = 0.10;
         private const double LengthTolerance = 0.10;
 
+        private static bool IsDxfAnnotationTextEntity(string entityType)
+        {
+            return string.Equals(
+                    entityType,
+                    "TEXT",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    entityType,
+                    "MTEXT",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeDxfAnnotationText(
+            string entityType,
+            string rawText)
+        {
+            if (rawText == null)
+            {
+                return string.Empty;
+            }
+            if (!string.Equals(
+                    entityType,
+                    "MTEXT",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return rawText;
+            }
+
+            string visibleText = rawText;
+            if (visibleText.Length >= 4 &&
+                visibleText[0] == '{' &&
+                visibleText[visibleText.Length - 1] == '}' &&
+                visibleText[1] == '\\' &&
+                visibleText[2] == 'f')
+            {
+                int semicolon = visibleText.IndexOf(';', 3);
+                if (semicolon >= 0)
+                {
+                    visibleText = visibleText.Substring(
+                        semicolon + 1,
+                        visibleText.Length - semicolon - 2);
+                }
+            }
+
+            StringBuilder result = new StringBuilder();
+            int index = 0;
+            while (index < visibleText.Length)
+            {
+                char current = visibleText[index];
+                if (current == '\\' && index + 1 < visibleText.Length)
+                {
+                    char escaped = visibleText[index + 1];
+                    if (escaped == 'P' || escaped == 'p')
+                    {
+                        result.Append('\n');
+                    }
+                    else if (escaped == '~')
+                    {
+                        result.Append(' ');
+                    }
+                    else if (escaped == '\\' ||
+                        escaped == '{' || escaped == '}')
+                    {
+                        result.Append(escaped);
+                    }
+                    else
+                    {
+                        result.Append(current);
+                        result.Append(escaped);
+                    }
+                    index += 2;
+                }
+                else
+                {
+                    result.Append(current);
+                    index++;
+                }
+            }
+            return result.ToString();
+        }
+
+        private static string SafeDxfLogValue(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace("\r", " ")
+                .Replace("\n", " ")
+                .Replace("|", "/");
+        }
+
+        private sealed class GlobalSourceAssociation
+        {
+            public DxfEntityInfo SourceText;
+            public DxfEntityInfo SourceUnderline;
+            public DxfEntityInfo SourceOldLeader;
+        }
+
+        private static bool BuildGlobalSourceAssociations(
+            DxfFullScanResult scan,
+            List<BatchMoveItem> allMoves,
+            out Dictionary<string, GlobalSourceAssociation> associations,
+            out string failure)
+        {
+            associations = new Dictionary<string, GlobalSourceAssociation>(
+                StringComparer.OrdinalIgnoreCase);
+            failure = string.Empty;
+            List<GlobalAnnotationGeometryMatcher.Annotation> annotations =
+                new List<GlobalAnnotationGeometryMatcher.Annotation>();
+            HashSet<string> annotationHandles =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, DxfEntityInfo> sourceTexts =
+                new Dictionary<string, DxfEntityInfo>(StringComparer.OrdinalIgnoreCase);
+            int moveIndex = 0;
+            while (moveIndex < allMoves.Count)
+            {
+                BatchMoveItem move = allMoves[moveIndex];
+                if (move.Data == null || string.IsNullOrEmpty(move.Data.Handle) ||
+                    string.IsNullOrEmpty(move.Data.Text) ||
+                    !move.Data.OriginCenterPresent)
+                {
+                    failure = move.Data == null ||
+                        string.IsNullOrEmpty(move.Data.OriginCenterFailure)
+                        ? "GLOBAL_ASSOCIATION_ORIGIN_CENTER_MISSING"
+                        : move.Data.OriginCenterFailure;
+                    return false;
+                }
+                if (move.Data == null || string.IsNullOrEmpty(move.Data.Handle) ||
+                    string.IsNullOrEmpty(move.Data.Text) ||
+                    double.IsNaN(move.Data.OriginX) || double.IsInfinity(move.Data.OriginX) ||
+                    double.IsNaN(move.Data.OriginY) || double.IsInfinity(move.Data.OriginY))
+                {
+                    failure = "invalid global annotation record";
+                    return false;
+                }
+                if (!annotationHandles.Add(move.Data.Handle))
+                {
+                    failure = "duplicate global annotation handle=" + move.Data.Handle;
+                    return false;
+                }
+                annotations.Add(new GlobalAnnotationGeometryMatcher.Annotation {
+                    Handle = move.Data.Handle,
+                    Text = move.Data.Text,
+                    IsMove = !string.Equals(
+                        move.PrecheckStatus,
+                        "SKIPPED",
+                        StringComparison.Ordinal),
+                    OriginCenterPresent = move.Data.OriginCenterPresent,
+                    X = move.Data.OriginX,
+                    Y = move.Data.OriginY
+                });
+                moveIndex++;
+            }
+
+            int entityIndex = 0;
+            while (entityIndex < scan.Entities.Count)
+            {
+                DxfEntityInfo entity = scan.Entities[entityIndex];
+                if (IsDxfAnnotationTextEntity(entity.EntityType))
+                {
+                    int matching = 0;
+                    BatchMoveItem matchingMove = null;
+                    int i = 0;
+                    while (i < allMoves.Count)
+                    {
+                        if (string.Equals(allMoves[i].Data.Handle, entity.Handle,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(NormalizeDxfAnnotationText(
+                                entity.EntityType, entity.TextValue),
+                                allMoves[i].Data.Text, StringComparison.Ordinal))
+                        {
+                            matching++;
+                            matchingMove = allMoves[i];
+                        }
+                        i++;
+                    }
+                    if (matching == 1)
+                    {
+                        if (sourceTexts.ContainsKey(matchingMove.Data.Handle))
+                        {
+                            failure = "duplicate source annotation text handle=" +
+                                matchingMove.Data.Handle;
+                            return false;
+                        }
+                        sourceTexts.Add(matchingMove.Data.Handle, entity);
+                    }
+                }
+                entityIndex++;
+            }
+
+            List<GlobalAnnotationGeometryMatcher.GeometryPair> pairs =
+                new List<GlobalAnnotationGeometryMatcher.GeometryPair>();
+            Dictionary<string, DxfEntityInfo> pairUnderlines =
+                new Dictionary<string, DxfEntityInfo>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, DxfEntityInfo> pairLeaders =
+                new Dictionary<string, DxfEntityInfo>(StringComparer.OrdinalIgnoreCase);
+            entityIndex = 0;
+            while (entityIndex < scan.Entities.Count)
+            {
+                DxfEntityInfo underline = scan.Entities[entityIndex];
+                if (string.Equals(underline.EntityType, "LWPOLYLINE",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(underline.LayerName, "-11",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    underline.Vertices != null && underline.Vertices.Count >= 3)
+                {
+                    DxfPoint p0 = underline.Vertices[0];
+                    DxfPoint p1 = underline.Vertices[1];
+                    DxfPoint p2 = underline.Vertices[2];
+                    if (Distance(p0, p2) <= 0.001 && Distance(p0, p1) > 0.001)
+                    {
+                        DxfEntityInfo leader = null;
+                        int leaderCount = 0;
+                        int j = 0;
+                        while (j < scan.Entities.Count)
+                        {
+                            DxfEntityInfo candidate = scan.Entities[j];
+                            if (string.Equals(candidate.EntityType, "LINE",
+                                    StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(candidate.LayerName, "-11",
+                                    StringComparison.OrdinalIgnoreCase) &&
+                                candidate.LineStart != null && candidate.LineEnd != null)
+                            {
+                                bool start = Distance(candidate.LineStart, p0) <= 0.001;
+                                bool end = Distance(candidate.LineEnd, p0) <= 0.001;
+                                if (start ^ end) { leader = candidate; leaderCount++; }
+                            }
+                            j++;
+                        }
+                        if (leaderCount == 1 && !pairUnderlines.ContainsKey(underline.Handle) &&
+                            !pairLeaders.ContainsKey(leader.Handle))
+                        {
+                            pairUnderlines.Add(underline.Handle, underline);
+                            pairLeaders.Add(leader.Handle, leader);
+                            pairs.Add(new GlobalAnnotationGeometryMatcher.GeometryPair {
+                                UnderlineHandle = underline.Handle,
+                                LeaderHandle = leader.Handle,
+                                X = (p0.X + p1.X) / 2.0,
+                                Y = (p0.Y + p1.Y) / 2.0
+                            });
+                        }
+                    }
+                }
+                entityIndex++;
+            }
+
+            GlobalAnnotationGeometryMatcher.Result match =
+                GlobalAnnotationGeometryMatcher.Match(annotations, pairs);
+            if (!string.IsNullOrEmpty(match.Failure)) { failure = match.Failure; return false; }
+            int assignmentIndex = 0;
+            while (assignmentIndex < match.Assignments.Count)
+            {
+                GlobalAnnotationGeometryMatcher.Assignment assignment =
+                    match.Assignments[assignmentIndex];
+                DxfEntityInfo sourceText;
+                if (!sourceTexts.TryGetValue(assignment.Annotation.Handle, out sourceText))
+                {
+                    failure = "source annotation text not uniquely matched=" +
+                        assignment.Annotation.Handle;
+                    return false;
+                }
+                associations.Add(assignment.Annotation.Handle,
+                    new GlobalSourceAssociation {
+                        SourceText = sourceText,
+                        SourceUnderline = pairUnderlines[assignment.Geometry.UnderlineHandle],
+                        SourceOldLeader = pairLeaders[assignment.Geometry.LeaderHandle]
+                    });
+                assignmentIndex++;
+            }
+            return true;
+        }
+
+        private static double Distance(DxfPoint left, DxfPoint right)
+        {
+            if (left == null || right == null) return double.PositiveInfinity;
+            double dx = left.X - right.X;
+            double dy = left.Y - right.Y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
         private static void LoadSourceGeometryAssociations(
             string sourceDxfPath,
+            List<BatchMoveItem> allMoves,
             List<BatchMoveItem> moves,
             List<AlgorithmAnnotationGeometryItem> items)
         {
@@ -4523,6 +4955,30 @@ namespace AvevaIntegration
                 data,
                 Encoding.Default);
 
+            Dictionary<string, GlobalSourceAssociation> globalAssociations;
+            string globalFailure;
+            if (!BuildGlobalSourceAssociations(
+                    scan,
+                    allMoves,
+                    out globalAssociations,
+                    out globalFailure))
+            {
+                int failedIndex = 0;
+                while (failedIndex < moves.Count)
+                {
+                    AlgorithmAnnotationGeometryItem failedItem =
+                        new AlgorithmAnnotationGeometryItem();
+                    failedItem.Move = moves[failedIndex];
+                    failedItem.SourceTextExpectedHandle = moves[failedIndex].Data.Handle;
+                    failedItem.SourceTextExpectedValue = moves[failedIndex].Data.Text;
+                    failedItem.Failure = globalFailure;
+                    failedItem.Status = "FAILED_PRECHECK";
+                    items.Add(failedItem);
+                    failedIndex++;
+                }
+                return;
+            }
+
             int moveIndex = 0;
             while (moveIndex < moves.Count)
             {
@@ -4531,29 +4987,51 @@ namespace AvevaIntegration
                 AlgorithmAnnotationGeometryItem item =
                     new AlgorithmAnnotationGeometryItem();
                 item.Move = move;
+                item.SourceTextExpectedHandle = move.Data.Handle;
+                item.SourceTextExpectedValue = move.Data.Text;
+                GlobalSourceAssociation globalAssociation;
+                if (!globalAssociations.TryGetValue(
+                        move.Data.Handle,
+                        out globalAssociation))
+                {
+                    item.Failure = "global source geometry association not found";
+                    item.Status = "FAILED_PRECHECK";
+                    items.Add(item);
+                    moveIndex++;
+                    EnsureParserIndexAdvanced(oldMoveIndex, moveIndex);
+                    continue;
+                }
 
                 int textIndex = -1;
-                int textMatches = 0;
+                int textHandleMatches = 0;
+                int textExactMatches = 0;
                 int entityIndex = 0;
                 while (entityIndex < scan.Entities.Count)
                 {
                     int oldEntityIndex = entityIndex;
                     DxfEntityInfo entity = scan.Entities[entityIndex];
-                    if (string.Equals(
-                            entity.EntityType,
-                            "TEXT",
-                            StringComparison.OrdinalIgnoreCase) &&
+                    if (IsDxfAnnotationTextEntity(entity.EntityType) &&
                         string.Equals(
                             entity.Handle,
                             move.Data.Handle,
                             StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(
-                            entity.TextValue,
+                            NormalizeDxfAnnotationText(
+                                entity.EntityType,
+                                entity.TextValue),
                             move.Data.Text,
                             StringComparison.Ordinal))
                     {
                         textIndex = entityIndex;
-                        textMatches++;
+                        textExactMatches++;
+                    }
+                    if (IsDxfAnnotationTextEntity(entity.EntityType) &&
+                        string.Equals(
+                            entity.Handle,
+                            move.Data.Handle,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        textHandleMatches++;
                     }
                     entityIndex++;
                     EnsureParserIndexAdvanced(
@@ -4561,9 +5039,13 @@ namespace AvevaIntegration
                         entityIndex);
                 }
 
-                if (textMatches != 1)
+                item.SourceTextHandleMatchCount = textHandleMatches;
+                item.SourceTextExactMatchCount = textExactMatches;
+                if (textExactMatches != 1)
                 {
-                    item.Failure = "source TEXT match count=" + textMatches;
+                    item.Failure =
+                        "source annotation text match count=" +
+                        textExactMatches;
                     item.Status = "FAILED_PRECHECK";
                     items.Add(item);
                     moveIndex++;
@@ -4572,15 +5054,18 @@ namespace AvevaIntegration
                 }
 
                 item.SourceText = scan.Entities[textIndex];
+                item.SourceTextEntityType = item.SourceText.EntityType;
+                item.SourceTextRawValue = item.SourceText.TextValue;
+                item.SourceTextNormalizedValue = NormalizeDxfAnnotationText(
+                    item.SourceText.EntityType,
+                    item.SourceText.TextValue);
+                item.SourceTextHandle = item.SourceText.Handle;
                 int relatedIndex = textIndex + 1;
                 while (relatedIndex < scan.Entities.Count)
                 {
                     int oldRelatedIndex = relatedIndex;
                     DxfEntityInfo related = scan.Entities[relatedIndex];
-                    if (string.Equals(
-                        related.EntityType,
-                        "TEXT",
-                        StringComparison.OrdinalIgnoreCase))
+                    if (IsDxfAnnotationTextEntity(related.EntityType))
                     {
                         break;
                     }
@@ -4629,6 +5114,17 @@ namespace AvevaIntegration
                         oldRelatedIndex,
                         relatedIndex);
                 }
+
+                item.SourceText = globalAssociation.SourceText;
+                item.SourceUnderline = globalAssociation.SourceUnderline;
+                item.SourceOldLeader = globalAssociation.SourceOldLeader;
+                item.SourceTextEntityType = item.SourceText.EntityType;
+                item.SourceTextRawValue = item.SourceText.TextValue;
+                item.SourceTextNormalizedValue = NormalizeDxfAnnotationText(
+                    item.SourceText.EntityType,
+                    item.SourceText.TextValue);
+                item.SourceTextHandle = item.SourceText.Handle;
+                item.Failure = string.Empty;
 
                 if (item.SourceUnderline == null)
                 {
@@ -6480,6 +6976,22 @@ namespace AvevaIntegration
                         " | immediate_absence_verification_status=" +
                         (item.ImmediateAbsenceVerificationStatus ?? string.Empty) +
                         " | text_str=" + data.Text +
+                        " | source_text_expected_handle=" +
+                        SafeDxfLogValue(item.SourceTextExpectedHandle) +
+                        " | source_text_expected_value=" +
+                        SafeDxfLogValue(item.SourceTextExpectedValue) +
+                        " | source_text_handle_match_count=" +
+                        item.SourceTextHandleMatchCount +
+                        " | source_text_exact_match_count=" +
+                        item.SourceTextExactMatchCount +
+                        " | source_text_entity_type=" +
+                        SafeDxfLogValue(item.SourceTextEntityType) +
+                        " | source_text_raw_value=" +
+                        SafeDxfLogValue(item.SourceTextRawValue) +
+                        " | source_text_normalized_value=" +
+                        SafeDxfLogValue(item.SourceTextNormalizedValue) +
+                        " | source_text_handle=" +
+                        SafeDxfLogValue(item.SourceTextHandle) +
                         " | dx=" + data.DeltaX.ToString(CultureInfo.InvariantCulture) +
                         " | dy=" + data.DeltaY.ToString(CultureInfo.InvariantCulture) +
                         " | text=" + item.TextStatus +
@@ -6607,7 +7119,63 @@ namespace AvevaIntegration
             data.Handle = GetOptionalString(moveObject, "handle");
             data.Layer = GetOptionalString(moveObject, "layer");
             data.Text = GetOptionalString(moveObject, "text_str");
+            double originX;
+            double originY;
+            string originFailure;
+            if (TryReadOriginCenter(
+                    moveObject,
+                    out originX,
+                    out originY,
+                    out originFailure))
+            {
+                data.OriginX = originX;
+                data.OriginY = originY;
+                data.OriginCenterPresent = true;
+            }
+            else
+            {
+                data.OriginCenterFailure = originFailure;
+            }
             return data;
+        }
+
+        private static bool TryReadOriginCenter(
+            IDictionary<string, object> moveObject,
+            out double originX,
+            out double originY,
+            out string failure)
+        {
+            originX = 0.0;
+            originY = 0.0;
+            failure = string.Empty;
+            if (moveObject == null || !moveObject.ContainsKey("origin_center"))
+            {
+                failure = "GLOBAL_ASSOCIATION_ORIGIN_CENTER_MISSING";
+                return false;
+            }
+            IList<object> values = moveObject["origin_center"] as IList<object>;
+            if (values == null || values.Count < 2)
+            {
+                failure = "GLOBAL_ASSOCIATION_ORIGIN_CENTER_INVALID";
+                return false;
+            }
+            try
+            {
+                originX = Convert.ToDouble(values[0], CultureInfo.InvariantCulture);
+                originY = Convert.ToDouble(values[1], CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                failure = "GLOBAL_ASSOCIATION_ORIGIN_CENTER_INVALID";
+                return false;
+            }
+            if (double.IsNaN(originX) || double.IsInfinity(originX) ||
+                double.IsNaN(originY) || double.IsInfinity(originY))
+            {
+                failure = "GLOBAL_ASSOCIATION_ORIGIN_CENTER_INVALID";
+                return false;
+            }
+            return true;
         }
 
         private static string GetOptionalString(
@@ -7373,6 +7941,7 @@ namespace AvevaIntegration
                 "new_center");
             move.OriginX = origin[0];
             move.OriginY = origin[1];
+            move.OriginCenterPresent = true;
             move.NewX = newCenter[0];
             move.NewY = newCenter[1];
             move.DeltaX = GetRequiredDouble(moveObject, "dx");
@@ -7504,6 +8073,8 @@ namespace AvevaIntegration
             public string Handle;
             public string Layer;
             public string Text;
+            public bool OriginCenterPresent;
+            public string OriginCenterFailure;
             public double OriginX;
             public double OriginY;
             public double NewX;
@@ -7657,6 +8228,14 @@ namespace AvevaIntegration
         private sealed class AlgorithmAnnotationGeometryItem
         {
             public BatchMoveItem Move;
+            public string SourceTextExpectedHandle;
+            public string SourceTextExpectedValue;
+            public int SourceTextHandleMatchCount;
+            public int SourceTextExactMatchCount;
+            public string SourceTextEntityType;
+            public string SourceTextRawValue;
+            public string SourceTextNormalizedValue;
+            public string SourceTextHandle;
             public DxfEntityInfo SourceText;
             public DxfEntityInfo SourceUnderline;
             public DxfEntityInfo SourceOldLeader;

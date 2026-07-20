@@ -34,6 +34,20 @@ define method .AnnotationAutoLayout()
    !this.entry = object DemoEntry()
    !this.unicodeProbe = object AnnotationUnicodeProbeControl()
    !this.unicodeProbeFrame.control = !this.unicodeProbe.handle()
+   !this.unicodeProbe.addeventhandler('StartRequested', !this, 'onUnicodeStartRequested')
+   !this.unicodeProbe.addeventhandler('CancelRequested', !this, 'onUnicodeCancelRequested')
+   !this.unicodeProbe.addeventhandler('OpenLogRequested', !this, 'onUnicodeOpenLogRequested')
+   !this.unicodeProbe.addeventhandler('CloseRequested', !this, 'onUnicodeCloseRequested')
+   !this.unicodeProbe.SetStartEnabled(true)
+   !this.unicodeProbe.SetCancelEnabled(false)
+   !this.start.visible = false
+   !this.cancel.visible = false
+   !this.log.visible = false
+   !this.close.visible = false
+   !this.probeLabel.visible = false
+   !this.probeStart.visible = false
+   !this.probeQuery.visible = false
+   !this.probeReset.visible = false
    !this.formTitle = 'Annotation Auto Layout'
    !this.status = 'STATE=IDLE | MESSAGE=准备就绪'
    !this.drawing = '当前图纸：未检查'
@@ -43,6 +57,22 @@ define method .AnnotationAutoLayout()
    !this.initcall = '!this.refreshStatus()'
    !this.cancelcall = '!this.closeForm()'
    !this.cancel.active = false
+endmethod
+
+define method .onUnicodeStartRequested(!args is ARRAY)
+   !this.startLayout()
+endmethod
+
+define method .onUnicodeCancelRequested(!args is ARRAY)
+   !this.cancelLayout()
+endmethod
+
+define method .onUnicodeOpenLogRequested(!args is ARRAY)
+   !this.openLog()
+endmethod
+
+define method .onUnicodeCloseRequested(!args is ARRAY)
+   !this.closeForm()
 endmethod
 
 define method .startDispatcherProbe()
@@ -64,7 +94,9 @@ endmethod
 define method .startLayout()
    !this.status = !this.entry.StartAnnotationAutoLayout()
    !this.start.active = false
+   !this.unicodeProbe.SetStartEnabled(false)
    !this.cancel.active = true
+   !this.unicodeProbe.SetCancelEnabled(true)
    !this.refreshStatus()
 endmethod
 
@@ -76,7 +108,9 @@ define method .refreshStatus()
 
    if not !this.entry.IsAnnotationAutoLayoutRunning() then
       !this.start.active = true
+      !this.unicodeProbe.SetStartEnabled(true)
       !this.cancel.active = false
+      !this.unicodeProbe.SetCancelEnabled(false)
    endif
 endmethod
 
@@ -86,10 +120,14 @@ define method .onAnnotationAutoLayoutStatusChanged(!data is ARRAY)
    !this.stageLabel.val = !data[1] + ' | ' + !data[2]
    if !data[4] then
       !this.start.active = false
+      !this.unicodeProbe.SetStartEnabled(false)
       !this.cancel.active = true
+      !this.unicodeProbe.SetCancelEnabled(true)
    else
       !this.start.active = true
+      !this.unicodeProbe.SetStartEnabled(true)
       !this.cancel.active = false
+      !this.unicodeProbe.SetCancelEnabled(false)
    endif
 endmethod
 
