@@ -15,6 +15,7 @@ namespace AvevaIntegration
             RunGlobalAssociationTests();
             RunSelfDrivenWorkflowRegressionChecks();
             RunUnifiedWorkflowLogRegressionChecks();
+            RunAnnotationAutoLayoutButtonRegressionChecks();
             RunTerminalVerificationRegressionChecks();
             AssertTrue("probe invariants pass",
                 AnnotationAutoLayoutDispatcherProbeLogic.Passed(
@@ -188,6 +189,48 @@ namespace AvevaIntegration
                 clientSource.IndexOf(".upload.log.txt", StringComparison.Ordinal) >= 0);
             AssertTrue("legacy query suffix remains available",
                 clientSource.IndexOf(".query.log.txt", StringComparison.Ordinal) >= 0);
+        }
+
+        private static void RunAnnotationAutoLayoutButtonRegressionChecks()
+        {
+            string pml = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\PML\\AnnotationAutoLayout.pmlfrm"));
+            string control = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\AnnotationUnicodeProbeControl.cs"));
+            string statusControl = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\AnnotationUnicodeProbeControl.cs"));
+            AssertTrue("PML has one PMLNet host", pml.IndexOf("container .mainFrame PmlNetControl", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML has status control member", pml.IndexOf("member .statusControl", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML uses status control type", pml.IndexOf("member .statusControl is AnnotationAutoLayoutStatusControl", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML creates status control type", pml.IndexOf("object AnnotationAutoLayoutStatusControl()", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML does not use probe control", pml.IndexOf("AnnotationUnicodeProbeControl", StringComparison.Ordinal) < 0);
+            AssertTrue("PML does not host native start button", pml.IndexOf("button .start", StringComparison.Ordinal) < 0);
+            AssertTrue("PML does not host native cancel button", pml.IndexOf("button .cancel", StringComparison.Ordinal) < 0);
+            AssertTrue("PML has start event binding", pml.IndexOf("StartRequested", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML has cancel event binding", pml.IndexOf("CancelRequested", StringComparison.Ordinal) >= 0);
+            AssertTrue("PML has no log callback binding", pml.IndexOf("OpenLog", StringComparison.Ordinal) < 0);
+            AssertTrue("PML has no close button callback binding", pml.IndexOf("CloseRequested", StringComparison.Ordinal) < 0);
+            AssertTrue("unified log remains", File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\SelfDrivenAnnotationAutoLayoutWorkflow.cs"))
+                .IndexOf("auto-layout.log.txt", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has start button", control.IndexOf("startButton", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has cancel button", control.IndexOf("cancelButton", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has no open log button", control.IndexOf("openLogButton", StringComparison.Ordinal) < 0);
+            AssertTrue("control has no close button", control.IndexOf("closeButton", StringComparison.Ordinal) < 0);
+            AssertTrue("control has progress bar", control.IndexOf("ProgressBar", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has title area", control.IndexOf("titleLabel", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has drawing display", control.IndexOf("drawingValue", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has state display", control.IndexOf("stateValue", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has stage display", control.IndexOf("stageValue", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has batch display", control.IndexOf("batchValue", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has status update API", control.IndexOf("SetStatus", StringComparison.Ordinal) >= 0);
+            AssertTrue("control has no open log button", control.IndexOf("OpenLog", StringComparison.Ordinal) < 0);
+            AssertTrue("control has no close button", control.IndexOf("CloseRequested", StringComparison.Ordinal) < 0);
+            AssertTrue("status control class is present", statusControl.IndexOf("AnnotationAutoLayoutStatusControl", StringComparison.Ordinal) >= 0);
         }
 
         private static void RunGlobalAssociationTests()

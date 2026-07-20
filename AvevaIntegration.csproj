@@ -80,6 +80,7 @@
     <Compile Include="AnnotationAutoLayoutDispatcherProbeState.cs" />
     <Compile Include="AnnotationAutoLayoutDispatcherProbeLogic.cs" />
     <Compile Include="AnnotationUnicodeProbeControl.cs" />
+    <Compile Include="AnnotationUnicodeProbeControl.Legacy.cs" />
     <Compile Include="GlobalAnnotationGeometryMatcher.cs" />
     <Compile Include="SelfDrivenAnnotationAutoLayoutWorkflow.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
