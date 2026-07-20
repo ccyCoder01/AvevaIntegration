@@ -24,6 +24,7 @@ setup form !!AnnotationAutoLayout resize
    button .probeQuery at x 14 y 14 width 12 height 2 '查询探针' callback '!this.queryDispatcherProbe()'
    button .probeReset at x 27 y 14 width 12 height 2 '重置探针' callback '!this.resetDispatcherProbe()'
 
+   path down
    container .unicodeProbeFrame PmlNetControl 'unicodeProbe' dock fill width 48 height 4
 
 exit

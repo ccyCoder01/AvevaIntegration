@@ -89,6 +89,7 @@ namespace AvevaIntegration
             try
             {
                 Directory.CreateDirectory(runDirectory);
+                DemoEntry.SetSharedWorkflowLog(logPath);
                 drawingIdentity = entry.GetCurrentDrawingIdentityOnOwnerThread();
                 dxfPath = Path.Combine(runDirectory, "source.dxf");
                 resultJsonPath = Path.Combine(
@@ -163,7 +164,9 @@ namespace AvevaIntegration
                         dxfPath,
                         username,
                         projectName,
-                        extraParamsJson);
+                        extraParamsJson,
+                        logPath,
+                        runId);
                     if (IsError(taskId))
                     {
                         PostFailure("algorithm upload failed | " + taskId);
@@ -174,7 +177,9 @@ namespace AvevaIntegration
                     {
                         string status = client.QueryAlgorithmTask(
                             taskId,
-                            resultJsonPath);
+                            resultJsonPath,
+                            logPath,
+                            runId);
                         Log("BACKGROUND_ONLY=true | ALGORITHM_STATUS=" + status);
                         if (IsError(status))
                         {
@@ -323,7 +328,51 @@ namespace AvevaIntegration
                     previewResult.Replace("\r", " ").Replace("\n", " "));
                 Log("event=VERIFY_ACCEPTED | batch=" + batchNumber + "/" +
                     totalBatches + " | already_applied=true");
-                batchStart += AnnotationAutoLayoutPlan.BatchSize;
+                int nextBatchStart;
+                int remaining;
+                int endExclusive;
+                int total;
+                int processed;
+                if (!TryGetResultInt(previewResult, "next", out nextBatchStart) ||
+                    !TryGetResultInt(previewResult, "remaining", out remaining) ||
+                    !TryGetResultInt(previewResult, "end_exclusive", out endExclusive) ||
+                    !TryGetResultInt(previewResult, "total", out total) ||
+                    !TryGetResultInt(previewResult, "processed", out processed))
+                {
+                    FailOnOwnerThread("VERIFY_RESULT_FIELDS_INVALID | result=" +
+                        previewResult);
+                    return;
+                }
+
+                bool terminal = remaining == 0 &&
+                    endExclusive == total &&
+                    endExclusive > batchStart &&
+                    processed == endExclusive - batchStart;
+                if (terminal)
+                {
+                    if (nextBatchStart != -1 && nextBatchStart != total)
+                    {
+                        FailOnOwnerThread(
+                            "VERIFY_RESULT_TERMINAL_NEXT_INVALID | result=" +
+                            previewResult);
+                        return;
+                    }
+                    batchStart = -1;
+                    Log("event=WORKFLOW_COMPLETED | batch=" + batchNumber +
+                        "/" + totalBatches + " | completed=" + total +
+                        " | total=" + total + " | next=-1 | remaining=0 | can_save=true");
+                    CompleteOnOwnerThread();
+                    return;
+                }
+
+                if (remaining <= 0 || nextBatchStart < 0 ||
+                    nextBatchStart >= total || nextBatchStart != endExclusive)
+                {
+                    FailOnOwnerThread("VERIFY_RESULT_NEXT_INVALID | result=" +
+                        previewResult);
+                    return;
+                }
+                batchStart = nextBatchStart;
                 if (batchStart < moveCount)
                 {
                     batchNumber = batchStart / AnnotationAutoLayoutPlan.BatchSize + 1;
@@ -376,6 +425,7 @@ namespace AvevaIntegration
             failed = true;
             finished = true;
             terminalStateReached = true;
+            DemoEntry.ClearSharedWorkflowLog();
             errorDetail = detail;
             stage = "Failed";
             Log("FINAL_STATUS=FAILED | " + detail);
@@ -388,6 +438,7 @@ namespace AvevaIntegration
             dispatcher.VerifyOwnerThread();
             finished = true;
             terminalStateReached = true;
+            DemoEntry.ClearSharedWorkflowLog();
             stage = "Cancelled";
             message = "已取消";
             Log("FINAL_STATUS=CANCELLED");
@@ -399,9 +450,12 @@ namespace AvevaIntegration
             dispatcher.VerifyOwnerThread();
             finished = true;
             terminalStateReached = true;
+            DemoEntry.ClearSharedWorkflowLog();
             stage = "Completed";
             message = "排版完成，可以保存图纸";
-            Log("FINAL_STATUS=SUCCESS");
+            Log("FINAL_STATUS=SUCCESS | WORKFLOW_RESULT=COMPLETED | " +
+                "TOTAL=" + totalBatches + " | COMPLETED=" + totalBatches +
+                " | FAILED=0 | INCONCLUSIVE=0 | can_save=true");
             PublishOnOwnerThread();
         }
 

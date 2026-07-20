@@ -14,6 +14,8 @@ namespace AvevaIntegration
             RunDxfMtextNormalizationTests();
             RunGlobalAssociationTests();
             RunSelfDrivenWorkflowRegressionChecks();
+            RunUnifiedWorkflowLogRegressionChecks();
+            RunTerminalVerificationRegressionChecks();
             AssertTrue("probe invariants pass",
                 AnnotationAutoLayoutDispatcherProbeLogic.Passed(
                     12, 12, 12, false, false, true, 19));
@@ -105,12 +107,37 @@ namespace AvevaIntegration
                 26.0, 1.0);
 
             AssertBatchPlan(1, new int[] { 1 });
-            AssertBatchPlan(5, new int[] { 5 });
-            AssertBatchPlan(6, new int[] { 5, 1 });
-            AssertBatchPlan(10, new int[] { 5, 5 });
-            AssertBatchPlan(23, new int[] { 5, 5, 5, 5, 3 });
+            AssertBatchPlan(5, new int[] { 1, 1, 1, 1, 1 });
+            AssertBatchPlan(6, new int[] { 1, 1, 1, 1, 1, 1 });
+            AssertBatchPlan(10, new int[] { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 });
+            AssertBatchPlan(23, new int[] {
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 });
 
             Console.WriteLine("PASS: " + testsRun + " assertions");
+        }
+
+        private static void RunTerminalVerificationRegressionChecks()
+        {
+            string workflowSource = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\SelfDrivenAnnotationAutoLayoutWorkflow.cs"));
+            AssertTrue("terminal checks remaining", workflowSource.IndexOf(
+                "remaining == 0", StringComparison.Ordinal) >= 0);
+            AssertTrue("terminal checks end range", workflowSource.IndexOf(
+                "endExclusive == total", StringComparison.Ordinal) >= 0);
+            AssertTrue("terminal accepts next minus one", workflowSource.IndexOf(
+                "nextBatchStart != -1", StringComparison.Ordinal) >= 0);
+            AssertTrue("nonterminal rejects negative next", workflowSource.IndexOf(
+                "nextBatchStart < 0", StringComparison.Ordinal) >= 0);
+            AssertTrue("terminal completes workflow", workflowSource.IndexOf(
+                "CompleteOnOwnerThread();", StringComparison.Ordinal) >= 0);
+            AssertTrue("completion logs can save", workflowSource.IndexOf(
+                "can_save=true", StringComparison.Ordinal) >= 0);
+            AssertTrue("completion does not schedule next", workflowSource.IndexOf(
+                "return;\n                }\n\n                if (remaining <= 0",
+                StringComparison.Ordinal) >= 0);
+            AssertTrue("batch size is one", AnnotationAutoLayoutPlan.BatchSize == 1);
         }
 
         private static void RunSelfDrivenWorkflowRegressionChecks()
@@ -128,6 +155,39 @@ namespace AvevaIntegration
                     StringComparison.Ordinal) >= 0);
             AssertTrue("verify accepts already applied result",
                 workflowSource.IndexOf("VERIFY_ACCEPTED", StringComparison.Ordinal) >= 0);
+        }
+
+        private static void RunUnifiedWorkflowLogRegressionChecks()
+        {
+            string clientSource = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\AlgorithmServiceClient.cs"));
+            string workflowSource = File.ReadAllText(
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                    "..\\..\\..\\..\\..\\SelfDrivenAnnotationAutoLayoutWorkflow.cs"));
+            AssertTrue("workflow passes shared upload log",
+                workflowSource.IndexOf("extraParamsJson", StringComparison.Ordinal) >= 0 &&
+                workflowSource.IndexOf("logPath", StringComparison.Ordinal) >= 0 &&
+                workflowSource.IndexOf("runId", StringComparison.Ordinal) >= 0);
+            AssertTrue("workflow passes shared query log",
+                workflowSource.IndexOf("resultJsonPath", StringComparison.Ordinal) >= 0 &&
+                workflowSource.IndexOf("logPath", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared upload log uses auto layout path",
+                clientSource.IndexOf("sharedLogPath", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared query log uses auto layout path",
+                clientSource.IndexOf("ALGORITHM_QUERY", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared upload completion event exists",
+                clientSource.IndexOf("DXF_UPLOAD_COMPLETED", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared upload failure event exists",
+                clientSource.IndexOf("DXF_UPLOAD_FAILED", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared algorithm success event exists",
+                clientSource.IndexOf("ALGORITHM_SUCCEEDED", StringComparison.Ordinal) >= 0);
+            AssertTrue("shared logger serializes writes",
+                clientSource.IndexOf("static readonly object logLock", StringComparison.Ordinal) >= 0);
+            AssertTrue("legacy upload suffix remains available",
+                clientSource.IndexOf(".upload.log.txt", StringComparison.Ordinal) >= 0);
+            AssertTrue("legacy query suffix remains available",
+                clientSource.IndexOf(".query.log.txt", StringComparison.Ordinal) >= 0);
         }
 
         private static void RunGlobalAssociationTests()

@@ -10,6 +10,7 @@ namespace AvevaIntegration
 {
     internal class AlgorithmServiceClient
     {
+        private static readonly object logLock = new object();
         private readonly string baseUrl;
 
         public AlgorithmServiceClient(string configuredBaseUrl)
@@ -22,6 +23,18 @@ namespace AvevaIntegration
             string username,
             string projectName,
             string extraParamsJson)
+        {
+            return UploadAlgorithmTask(filePath, username, projectName,
+                extraParamsJson, null, null);
+        }
+
+        internal string UploadAlgorithmTask(
+            string filePath,
+            string username,
+            string projectName,
+            string extraParamsJson,
+            string sharedLogPath,
+            string runId)
         {
             string responseJson = string.Empty;
             string httpStatus = "N/A";
@@ -115,7 +128,12 @@ namespace AvevaIntegration
                     projectName,
                     url,
                     httpStatus,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId,
+                    IsSuccessStatus(httpStatus)
+                        ? "DXF_UPLOAD_COMPLETED"
+                        : "DXF_UPLOAD_FAILED");
 
                 if (!IsSuccessStatus(httpStatus))
                 {
@@ -149,7 +167,10 @@ namespace AvevaIntegration
                     projectName,
                     baseUrl + "/api/v1/tasks/upload",
                     httpStatus,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId,
+                    "DXF_UPLOAD_FAILED");
                 return "ERROR: HTTP=" + httpStatus +
                     " | " + responseJson;
             }
@@ -162,7 +183,10 @@ namespace AvevaIntegration
                     projectName,
                     baseUrl + "/api/v1/tasks/upload",
                     httpStatus,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId,
+                    "DXF_UPLOAD_FAILED");
                 return "ERROR: " +
                     ex.GetType().FullName + ": " +
                     ex.Message;
@@ -172,6 +196,15 @@ namespace AvevaIntegration
         public string QueryAlgorithmTask(
             string taskId,
             string outputJsonPath)
+        {
+            return QueryAlgorithmTask(taskId, outputJsonPath, null, null);
+        }
+
+        internal string QueryAlgorithmTask(
+            string taskId,
+            string outputJsonPath,
+            string sharedLogPath,
+            string runId)
         {
             string responseJson = string.Empty;
             string httpStatus = "N/A";
@@ -217,7 +250,9 @@ namespace AvevaIntegration
                     taskId,
                     httpStatus,
                     string.Empty,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId);
 
                 if (!IsSuccessStatus(httpStatus))
                 {
@@ -255,7 +290,9 @@ namespace AvevaIntegration
                         taskId,
                         httpStatus,
                         status,
-                        responseJson);
+                        responseJson,
+                        sharedLogPath,
+                        runId);
                     return status.ToUpperInvariant();
                 }
 
@@ -280,7 +317,9 @@ namespace AvevaIntegration
                         taskId,
                         httpStatus,
                         status,
-                        responseJson);
+                        responseJson,
+                        sharedLogPath,
+                        runId);
                     return "ERROR: FAILED | error_code=" +
                         (errorCode ?? string.Empty) +
                         " | error_message=" +
@@ -293,7 +332,9 @@ namespace AvevaIntegration
                     taskId,
                     httpStatus,
                     status,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId);
                 return "ERROR: HTTP=" + httpStatus +
                     " | unknown status | " + responseJson;
             }
@@ -308,7 +349,9 @@ namespace AvevaIntegration
                     taskId,
                     httpStatus,
                     string.Empty,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId);
                 return "ERROR: HTTP=" + httpStatus +
                     " | " + responseJson;
             }
@@ -320,7 +363,9 @@ namespace AvevaIntegration
                     taskId,
                     httpStatus,
                     string.Empty,
-                    responseJson);
+                    responseJson,
+                    sharedLogPath,
+                    runId);
                 return "ERROR: " +
                     ex.GetType().FullName + ": " +
                     ex.Message;
@@ -519,14 +564,19 @@ namespace AvevaIntegration
             string projectName,
             string url,
             string httpStatus,
-            string responseJson)
+            string responseJson,
+            string sharedLogPath,
+            string runId,
+            string eventName)
         {
             if (string.IsNullOrEmpty(filePath))
             {
                 return;
             }
 
-            string logPath = filePath + ".upload.log.txt";
+            string logPath = string.IsNullOrEmpty(sharedLogPath)
+                ? filePath + ".upload.log.txt"
+                : sharedLogPath;
             long fileSize = 0;
 
             if (File.Exists(filePath))
@@ -536,22 +586,38 @@ namespace AvevaIntegration
 
             try
             {
-                using (StreamWriter writer = new StreamWriter(
-                    logPath,
-                    false,
-                    new UTF8Encoding(false)))
+                lock (logLock)
                 {
-                    writer.WriteLine("Time: " + DateTime.Now.ToString(
-                        "o",
-                        CultureInfo.InvariantCulture));
-                    writer.WriteLine("Request URL: " + url);
-                    writer.WriteLine("File path: " + filePath);
-                    writer.WriteLine("File name: " + fileName);
-                    writer.WriteLine("File size: " + fileSize);
-                    writer.WriteLine("username: " + username);
-                    writer.WriteLine("project_name: " + projectName);
-                    writer.WriteLine("HTTP status: " + httpStatus);
-                    writer.WriteLine("Response JSON: " + responseJson);
+                    using (StreamWriter writer = new StreamWriter(
+                        logPath,
+                        !string.IsNullOrEmpty(sharedLogPath),
+                        new UTF8Encoding(false)))
+                    {
+                        if (!string.IsNullOrEmpty(sharedLogPath))
+                        {
+                            writer.WriteLine("event=" + eventName +
+                                " | timestamp=" + DateTime.Now.ToString("o", CultureInfo.InvariantCulture) +
+                                " | thread_id=" + System.Threading.Thread.CurrentThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture) +
+                                " | run_id=" + (runId ?? string.Empty) +
+                                " | source_dxf=" + filePath +
+                                " | file_size_bytes=" + fileSize.ToString(CultureInfo.InvariantCulture) +
+                                " | request_uri=" + url +
+                                " | http_status=" + httpStatus +
+                                " | response_summary=" + Summarize(responseJson));
+                        }
+                        else
+                        {
+                            writer.WriteLine("Time: " + DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
+                            writer.WriteLine("Request URL: " + url);
+                            writer.WriteLine("File path: " + filePath);
+                            writer.WriteLine("File name: " + fileName);
+                            writer.WriteLine("File size: " + fileSize);
+                            writer.WriteLine("username: " + username);
+                            writer.WriteLine("project_name: " + projectName);
+                            writer.WriteLine("HTTP status: " + httpStatus);
+                            writer.WriteLine("Response JSON: " + responseJson);
+                        }
+                    }
                 }
             }
             catch
@@ -565,7 +631,9 @@ namespace AvevaIntegration
             string taskId,
             string httpStatus,
             string status,
-            string responseJson)
+            string responseJson,
+            string sharedLogPath,
+            string runId)
         {
             if (string.IsNullOrEmpty(outputJsonPath))
             {
@@ -574,19 +642,40 @@ namespace AvevaIntegration
 
             try
             {
-                using (StreamWriter writer = new StreamWriter(
-                    outputJsonPath + ".query.log.txt",
-                    false,
-                    new UTF8Encoding(false)))
+                string logPath = string.IsNullOrEmpty(sharedLogPath)
+                    ? outputJsonPath + ".query.log.txt" : sharedLogPath;
+                lock (logLock)
                 {
-                    writer.WriteLine("Time: " + DateTime.Now.ToString(
-                        "o",
-                        CultureInfo.InvariantCulture));
-                    writer.WriteLine("Request URL: " + url);
-                    writer.WriteLine("task_id: " + taskId);
-                    writer.WriteLine("HTTP status: " + httpStatus);
-                    writer.WriteLine("status: " + status);
-                    writer.WriteLine("Response JSON: " + responseJson);
+                    using (StreamWriter writer = new StreamWriter(
+                        logPath,
+                        !string.IsNullOrEmpty(sharedLogPath),
+                        new UTF8Encoding(false)))
+                    {
+                        if (!string.IsNullOrEmpty(sharedLogPath))
+                        {
+                            string eventName = string.Equals(status, "SUCCESS", StringComparison.OrdinalIgnoreCase)
+                                ? "ALGORITHM_SUCCEEDED"
+                                : string.Equals(status, "FAILED", StringComparison.OrdinalIgnoreCase)
+                                    ? "ALGORITHM_FAILED" : "ALGORITHM_QUERY";
+                            writer.WriteLine("event=" + eventName +
+                                " | timestamp=" + DateTime.Now.ToString("o", CultureInfo.InvariantCulture) +
+                                " | thread_id=" + System.Threading.Thread.CurrentThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture) +
+                                " | run_id=" + (runId ?? string.Empty) +
+                                " | task_id=" + (taskId ?? string.Empty) +
+                                " | http_status=" + httpStatus +
+                                " | algorithm_status=" + (status ?? string.Empty) +
+                                " | response_summary=" + Summarize(responseJson));
+                        }
+                        else
+                        {
+                            writer.WriteLine("Time: " + DateTime.Now.ToString("o", CultureInfo.InvariantCulture));
+                            writer.WriteLine("Request URL: " + url);
+                            writer.WriteLine("task_id: " + taskId);
+                            writer.WriteLine("HTTP status: " + httpStatus);
+                            writer.WriteLine("status: " + status);
+                            writer.WriteLine("Response JSON: " + responseJson);
+                        }
+                    }
                 }
             }
             catch
@@ -600,7 +689,9 @@ namespace AvevaIntegration
             string taskId,
             string httpStatus,
             string status,
-            string responseJson)
+            string responseJson,
+            string sharedLogPath,
+            string runId)
         {
             WriteQueryLog(
                 outputJsonPath,
@@ -608,7 +699,16 @@ namespace AvevaIntegration
                 taskId,
                 httpStatus,
                 status,
-                responseJson);
+                responseJson,
+                sharedLogPath,
+                runId);
+        }
+
+        private static string Summarize(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            string text = value.Replace("\r", " ").Replace("\n", " ");
+            return text.Length > 240 ? text.Substring(0, 240) : text;
         }
     }
 }

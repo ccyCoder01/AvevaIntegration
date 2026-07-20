@@ -5,7 +5,7 @@ namespace AvevaIntegration
 {
     internal static class AnnotationAutoLayoutPlan
     {
-        internal const int BatchSize = 5;
+        internal const int BatchSize = 1;
 
         internal static List<int> CreateBatchSizes(int moveCount)
         {

@@ -20,6 +20,7 @@ namespace AvevaIntegration
     {
         private static SelfDrivenAnnotationAutoLayoutWorkflow autoLayoutWorkflow;
         private static MarineUiDispatcher autoLayoutDispatcher;
+        private static string sharedWorkflowLogPath;
         private static readonly object probeLock = new object();
         private static AnnotationAutoLayoutDispatcherProbeState dispatcherProbe;
 
@@ -1363,6 +1364,16 @@ namespace AvevaIntegration
             return end < 0
                 ? status.Substring(start)
                 : status.Substring(start, end - start);
+        }
+
+        internal static void SetSharedWorkflowLog(string path)
+        {
+            sharedWorkflowLogPath = path;
+        }
+
+        internal static void ClearSharedWorkflowLog()
+        {
+            sharedWorkflowLogPath = null;
         }
 
         internal bool HasCurrentDrawingOnOwnerThread()
@@ -3295,7 +3306,7 @@ namespace AvevaIntegration
         {
             using (StreamWriter writer = new StreamWriter(
                 logPath,
-                false,
+                !string.IsNullOrEmpty(sharedWorkflowLogPath),
                 new UTF8Encoding(false)))
             {
                 writer.WriteLine("BUILD=PreviewApplyReceiptIdentityV7");
@@ -3318,10 +3329,8 @@ namespace AvevaIntegration
         {
             using (StreamWriter writer = new StreamWriter(
                 logPath,
-                !string.Equals(
-                    step,
-                    "STEP=METHOD_ENTER",
-                    StringComparison.Ordinal),
+                !string.IsNullOrEmpty(sharedWorkflowLogPath) ||
+                !string.Equals(step, "STEP=METHOD_ENTER", StringComparison.Ordinal),
                 new UTF8Encoding(false)))
             {
                 if (string.Equals(
@@ -3438,6 +3447,10 @@ namespace AvevaIntegration
             int endExclusive,
             bool fullMode)
         {
+            if (!string.IsNullOrEmpty(sharedWorkflowLogPath))
+            {
+                return sharedWorkflowLogPath;
+            }
             string suffix = apply
                 ? ".geometry.apply"
                 : ".geometry.preview";
@@ -4208,12 +4221,12 @@ namespace AvevaIntegration
                     batch.MoveItems,
                     start,
                     endExclusive);
-                string logPath = (resultJsonPath ?? string.Empty) +
-                    ".move.batch." +
-                    start.ToString("D4", CultureInfo.InvariantCulture) +
-                    "-" +
-                    endExclusive.ToString("D4", CultureInfo.InvariantCulture) +
-                    ".log.txt";
+                string logPath = string.IsNullOrEmpty(sharedWorkflowLogPath)
+                    ? (resultJsonPath ?? string.Empty) + ".move.batch." +
+                        start.ToString("D4", CultureInfo.InvariantCulture) +
+                        "-" + endExclusive.ToString("D4", CultureInfo.InvariantCulture) +
+                        ".log.txt"
+                    : sharedWorkflowLogPath;
                 WriteTextMoveBatchHeader(
                     logPath,
                     start,
@@ -4425,7 +4438,7 @@ namespace AvevaIntegration
         {
             using (StreamWriter writer = new StreamWriter(
                 logPath,
-                false,
+                !string.IsNullOrEmpty(sharedWorkflowLogPath),
                 new UTF8Encoding(false)))
             {
                 writer.WriteLine("BUILD=TextMoveBatchSyncV1");
