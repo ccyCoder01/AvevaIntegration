@@ -54,6 +54,7 @@
     <Reference Include="System" />
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
     <Reference Include="PMLNet">
       <HintPath>D:\CodeNetSpace\AvevaSdk\PMLNet.dll</HintPath>
       <Private>False</Private>
@@ -72,6 +73,14 @@
     <Compile Include="AlgorithmServiceClient.cs" />
     <Compile Include="AlgorithmServiceConfig.cs" />
     <Compile Include="DemoEntry.cs" />
+    <Compile Include="LeaderAttachmentGeometry.cs" />
+    <Compile Include="AnnotationAutoLayoutWorkflow.cs" />
+    <Compile Include="AnnotationAutoLayoutPlan.cs" />
+    <Compile Include="MarineUiDispatcher.cs" />
+    <Compile Include="AnnotationAutoLayoutDispatcherProbeState.cs" />
+    <Compile Include="AnnotationAutoLayoutDispatcherProbeLogic.cs" />
+    <Compile Include="AnnotationUnicodeProbeControl.cs" />
+    <Compile Include="SelfDrivenAnnotationAutoLayoutWorkflow.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

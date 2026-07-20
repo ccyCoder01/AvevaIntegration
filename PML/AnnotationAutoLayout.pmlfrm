@@ -1,0 +1,109 @@
+-- 标注自动排版 - AVEVA Marine Drafting native PML Form
+-- Load the assembly first with the project's normal PMLNet IMPORT command.
+
+using namespace 'AvevaIntegration'
+
+setup form !!AnnotationAutoLayout resize
+   member .entry       is DemoEntry
+   member .unicodeProbe is AnnotationUnicodeProbeControl
+   member .status      is STRING
+   member .drawing     is STRING
+   member .stage       is STRING
+
+   paragraph .drawingLabel at x 1 y 1 width 48 lines 1
+   paragraph .statusLabel  at x 1 y 3 width 48 lines 2
+   paragraph .stageLabel   at x 1 y 6 width 48 lines 1
+
+   button .start at x 1 y 9 width 12 height 2 'Start' callback '!this.startLayout()'
+   button .cancel at x 14 y 9 width 10 height 2 '取消' callback '!this.cancelLayout()'
+   button .log at x 25 y 9 width 10 height 2 '查看日志' callback '!this.openLog()'
+   button .close at x 36 y 9 width 10 height 2 '关闭' callback '!this.closeForm()'
+
+   paragraph .probeLabel at x 1 y 12 width 48 lines 2
+   button .probeStart at x 1 y 14 width 12 height 2 '线程探针' callback '!this.startDispatcherProbe()'
+   button .probeQuery at x 14 y 14 width 12 height 2 '查询探针' callback '!this.queryDispatcherProbe()'
+   button .probeReset at x 27 y 14 width 12 height 2 '重置探针' callback '!this.resetDispatcherProbe()'
+
+   container .unicodeProbeFrame PmlNetControl 'unicodeProbe' dock fill width 48 height 4
+
+exit
+
+define method .AnnotationAutoLayout()
+   using namespace 'AvevaIntegration'
+
+   !this.entry = object DemoEntry()
+   !this.unicodeProbe = object AnnotationUnicodeProbeControl()
+   !this.unicodeProbeFrame.control = !this.unicodeProbe.handle()
+   !this.formTitle = 'Annotation Auto Layout'
+   !this.status = 'STATE=IDLE | MESSAGE=准备就绪'
+   !this.drawing = '当前图纸：未检查'
+   !this.stage = '准备就绪'
+   !this.entry.addeventhandler('AnnotationAutoLayoutStatusChanged', !this, 'onAnnotationAutoLayoutStatusChanged')
+   !this.entry.addeventhandler('AnnotationAutoLayoutDispatcherProbeCompleted', !this, 'onDispatcherProbeCompleted')
+   !this.initcall = '!this.refreshStatus()'
+   !this.cancelcall = '!this.closeForm()'
+   !this.cancel.active = false
+endmethod
+
+define method .startDispatcherProbe()
+   !this.probeLabel.val = !this.entry.StartAnnotationAutoLayoutDispatcherProbe()
+endmethod
+
+define method .queryDispatcherProbe()
+   !this.probeLabel.val = !this.entry.GetAnnotationAutoLayoutDispatcherProbeStatus()
+endmethod
+
+define method .resetDispatcherProbe()
+   !this.probeLabel.val = !this.entry.ResetAnnotationAutoLayoutDispatcherProbe()
+endmethod
+
+define method .onDispatcherProbeCompleted(!args is ARRAY)
+   !this.probeLabel.val = !args[1]
+endmethod
+
+define method .startLayout()
+   !this.status = !this.entry.StartAnnotationAutoLayout()
+   !this.start.active = false
+   !this.cancel.active = true
+   !this.refreshStatus()
+endmethod
+
+define method .refreshStatus()
+   !this.status = !this.entry.GetAnnotationAutoLayoutStatus()
+   !this.statusLabel.val = !this.status
+   !this.drawingLabel.val = !this.entry.GetAnnotationAutoLayoutDrawing()
+   !this.stageLabel.val = !this.entry.GetAnnotationAutoLayoutStage() + ' | ' + !this.entry.GetAnnotationAutoLayoutBatch()
+
+   if not !this.entry.IsAnnotationAutoLayoutRunning() then
+      !this.start.active = true
+      !this.cancel.active = false
+   endif
+endmethod
+
+define method .onAnnotationAutoLayoutStatusChanged(!data is ARRAY)
+   !this.statusLabel.val = !data[0]
+   !this.drawingLabel.val = !data[7]
+   !this.stageLabel.val = !data[1] + ' | ' + !data[2]
+   if !data[4] then
+      !this.start.active = false
+      !this.cancel.active = true
+   else
+      !this.start.active = true
+      !this.cancel.active = false
+   endif
+endmethod
+
+define method .cancelLayout()
+   !this.status = !this.entry.CancelAnnotationAutoLayout()
+   !this.refreshStatus()
+endmethod
+
+define method .openLog()
+   !this.entry.OpenAnnotationAutoLayoutLog()
+endmethod
+
+define method .closeForm()
+   if not !this.entry.IsAnnotationAutoLayoutRunning() then
+      !this.hide()
+   endif
+endmethod

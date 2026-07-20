@@ -243,7 +243,9 @@ namespace AvevaIntegration
                     responseJson,
                     new UTF8Encoding(false));
 
-                if (string.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase) ||
+                if (string.Equals(status, "QUEUED", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(status, "PROCESSING", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(status, "RUNNING", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(status, "SUCCESS", StringComparison.OrdinalIgnoreCase))
                 {

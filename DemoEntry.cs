@@ -1,10 +1,12 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Aveva.Marine.Drafting;
@@ -16,6 +18,18 @@ namespace AvevaIntegration
     [PMLNetCallable()]
     public class DemoEntry
     {
+        private static SelfDrivenAnnotationAutoLayoutWorkflow autoLayoutWorkflow;
+        private static MarineUiDispatcher autoLayoutDispatcher;
+        private static readonly object probeLock = new object();
+        private static AnnotationAutoLayoutDispatcherProbeState dispatcherProbe;
+
+        [PMLNetCallable()]
+        public event PMLNetDelegate.PMLNetEventHandler
+            AnnotationAutoLayoutStatusChanged;
+
+        [PMLNetCallable()]
+        public event PMLNetDelegate.PMLNetEventHandler
+            AnnotationAutoLayoutDispatcherProbeCompleted;
         private enum OldLeaderAbsenceResult
         {
             NotRun,
@@ -972,6 +986,456 @@ namespace AvevaIntegration
         public string GetAlgorithmServiceUrl()
         {
             return AlgorithmServiceConfig.LoadBaseUrl();
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutUiText(string key)
+        {
+            if (string.Equals(
+                key,
+                "FORM_TITLE",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return "\u6807\u6CE8\u81EA\u52A8\u6392\u7248";
+            }
+
+            if (string.Equals(
+                key,
+                "BUTTON_START",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return "\u5F00\u59CB\u6392\u7248";
+            }
+            return string.Empty;
+        }
+
+        [PMLNetCallable()]
+        public string StartAnnotationAutoLayout()
+        {
+            return StartAnnotationAutoLayout(
+                "AVEVA",
+                "Default",
+                "{}");
+        }
+
+        [PMLNetCallable()]
+        public string StartAnnotationAutoLayout(
+            string username,
+            string projectName,
+            string extraParamsJson)
+        {
+            if (autoLayoutWorkflow != null &&
+                !autoLayoutWorkflow.IsFinished)
+            {
+                return "ERROR: annotation auto-layout is already running";
+            }
+            try
+            {
+                autoLayoutDispatcher = new MarineUiDispatcher();
+            }
+            catch (Exception ex)
+            {
+                return "ERROR: Marine UI dispatcher creation failed | " +
+                    ex.Message;
+            }
+            autoLayoutWorkflow = new SelfDrivenAnnotationAutoLayoutWorkflow(
+                this,
+                autoLayoutDispatcher,
+                username,
+                projectName,
+                extraParamsJson);
+            return autoLayoutWorkflow.StartOnOwnerThread();
+        }
+
+        [PMLNetCallable()]
+        public string AdvanceAnnotationAutoLayout()
+        {
+            if (autoLayoutWorkflow == null)
+            {
+                return "STATE=IDLE | MESSAGE=准备就绪";
+            }
+            return "AdvanceAnnotationAutoLayout is no longer required; " +
+                "workflow is self-driven.";
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutStatus()
+        {
+            if (autoLayoutWorkflow == null)
+            {
+                return "STATE=IDLE | MESSAGE=准备就绪";
+            }
+            return autoLayoutWorkflow.Status();
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutDrawing()
+        {
+            return autoLayoutWorkflow == null
+                ? string.Empty
+                : GetWorkflowField("DRAWING");
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutStage()
+        {
+            return autoLayoutWorkflow == null
+                ? "准备就绪"
+                : GetWorkflowField("STAGE");
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutBatch()
+        {
+            return autoLayoutWorkflow == null
+                ? "0/0"
+                : GetWorkflowField("BATCH");
+        }
+
+        [PMLNetCallable()]
+        public bool IsAnnotationAutoLayoutRunning()
+        {
+            return autoLayoutWorkflow != null &&
+                !autoLayoutWorkflow.IsFinished;
+        }
+
+        [PMLNetCallable()]
+        public string CancelAnnotationAutoLayout()
+        {
+            if (autoLayoutWorkflow == null)
+            {
+                return "STATE=IDLE | MESSAGE=准备就绪";
+            }
+            return autoLayoutWorkflow.Cancel();
+        }
+
+        [PMLNetCallable()]
+        public string OpenAnnotationAutoLayoutLog()
+        {
+            if (autoLayoutWorkflow == null)
+            {
+                return "ERROR: annotation auto-layout has not started";
+            }
+            return autoLayoutWorkflow.OpenLog();
+        }
+
+        [PMLNetCallable()]
+        public string ShowAnnotationAutoLayoutWindow()
+        {
+            return "SUCCESS: 请执行 SHOW !!AnnotationAutoLayout 打开原生 PML Form";
+        }
+
+        [PMLNetCallable()]
+        public string StartAnnotationAutoLayoutDispatcherProbe()
+        {
+            lock (probeLock)
+            {
+                if (dispatcherProbe != null &&
+                    (dispatcherProbe.State == "STARTED" ||
+                     dispatcherProbe.State == "WORKER_RUNNING" ||
+                     dispatcherProbe.State == "POSTED" ||
+                     dispatcherProbe.State == "CALLBACK_RUNNING"))
+                {
+                    return "ERROR: dispatcher probe is already running|PROBE_ID=" +
+                        dispatcherProbe.ProbeId;
+                }
+
+                try
+                {
+                    if (autoLayoutDispatcher == null)
+                    {
+                        autoLayoutDispatcher = new MarineUiDispatcher();
+                    }
+                    AnnotationAutoLayoutDispatcherProbeState state =
+                        new AnnotationAutoLayoutDispatcherProbeState();
+                    state.ProbeId = Guid.NewGuid().ToString("N");
+                    state.State = "STARTED";
+                    state.StartUtc = DateTime.UtcNow;
+                    state.StartThreadId = Thread.CurrentThread.ManagedThreadId;
+                    state.StartIsThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+                    state.StartSynchronizationContext = GetSynchronizationContextName();
+                    state.OwnerThreadId = autoLayoutDispatcher.OwnerThreadId;
+                    dispatcherProbe = state;
+                    WriteDispatcherProbeLog("PROBE_START", state);
+
+                    if (state.StartThreadId != state.OwnerThreadId)
+                    {
+                        state.Error = "start thread is not dispatcher owner thread";
+                        state.Passed = false;
+                        state.State = "FAILED";
+                        state.CompletedUtc = DateTime.UtcNow;
+                        WriteDispatcherProbeLog("PROBE_FAILED", state);
+                        return "ERROR: " + state.GetStatus();
+                    }
+
+                    ThreadPool.QueueUserWorkItem(delegate(object ignored)
+                    {
+                        DispatcherProbeWorker(state);
+                    });
+                    return "PROBE_STARTED|PROBE_ID=" + state.ProbeId;
+                }
+                catch (Exception ex)
+                {
+                    return "ERROR: dispatcher probe start failed|" + ex.Message;
+                }
+            }
+        }
+
+        [PMLNetCallable()]
+        public string GetAnnotationAutoLayoutDispatcherProbeStatus()
+        {
+            lock (probeLock)
+            {
+                return dispatcherProbe == null
+                    ? "PROBE_ID=|STATE=IDLE|PASSED=false|ERROR="
+                    : dispatcherProbe.GetStatus();
+            }
+        }
+
+        [PMLNetCallable()]
+        public string ResetAnnotationAutoLayoutDispatcherProbe()
+        {
+            lock (probeLock)
+            {
+                if (dispatcherProbe != null &&
+                    (dispatcherProbe.State == "STARTED" ||
+                     dispatcherProbe.State == "WORKER_RUNNING" ||
+                     dispatcherProbe.State == "POSTED" ||
+                     dispatcherProbe.State == "CALLBACK_RUNNING"))
+                {
+                    return "ERROR: dispatcher probe is running";
+                }
+                dispatcherProbe = null;
+                return "PROBE_RESET";
+            }
+        }
+
+        private void DispatcherProbeWorker(
+            AnnotationAutoLayoutDispatcherProbeState state)
+        {
+            try
+            {
+                lock (probeLock)
+                {
+                    state.WorkerThreadId = Thread.CurrentThread.ManagedThreadId;
+                    state.WorkerIsThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+                    state.State = "WORKER_RUNNING";
+                    WriteDispatcherProbeLog("PROBE_WORKER", state);
+                }
+                autoLayoutDispatcher.Post(delegate
+                {
+                    DispatcherProbeCallback(state, null);
+                });
+                lock (probeLock)
+                {
+                    state.State = "POSTED";
+                    WriteDispatcherProbeLog("PROBE_POST", state);
+                }
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    autoLayoutDispatcher.Post(delegate
+                    {
+                        DispatcherProbeCallback(state, ex);
+                    });
+                }
+                catch (Exception postException)
+                {
+                    lock (probeLock)
+                    {
+                        state.Error = ex.Message + " | post=" + postException.Message;
+                        state.State = "FAILED";
+                        state.CompletedUtc = DateTime.UtcNow;
+                        WriteDispatcherProbeLog("PROBE_FAILED", state);
+                    }
+                }
+            }
+        }
+
+        private void DispatcherProbeCallback(
+            AnnotationAutoLayoutDispatcherProbeState state,
+            Exception workerError)
+        {
+            try
+            {
+                lock (probeLock)
+                {
+                    state.State = "CALLBACK_RUNNING";
+                    state.CallbackThreadId = Thread.CurrentThread.ManagedThreadId;
+                    state.CallbackIsThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+                    state.CallbackSynchronizationContext = GetSynchronizationContextName();
+                    WriteDispatcherProbeLog("PROBE_CALLBACK", state);
+                }
+                autoLayoutDispatcher.VerifyOwnerThread();
+                lock (probeLock)
+                {
+                    state.Passed = workerError == null &&
+                        AnnotationAutoLayoutDispatcherProbeLogic.Passed(
+                            state.StartThreadId, state.OwnerThreadId,
+                            state.CallbackThreadId, state.StartIsThreadPool,
+                            state.CallbackIsThreadPool, state.WorkerIsThreadPool,
+                            state.WorkerThreadId);
+                    if (workerError != null)
+                    {
+                        state.Error = workerError.Message;
+                    }
+                    state.EventThreadId = Thread.CurrentThread.ManagedThreadId;
+                    state.EventIsThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+                    state.State = "EVENT_PUBLISHED";
+                    WriteDispatcherProbeLog("PROBE_EVENT", state);
+                    if (AnnotationAutoLayoutDispatcherProbeCompleted != null)
+                    {
+                        ArrayList args = new ArrayList();
+                        args.Add(state.ProbeId);
+                        args.Add(state.GetStatus());
+                        args.Add(state.Passed ? "true" : "false");
+                        args.Add(state.EventThreadId.ToString());
+                        args.Add(state.OwnerThreadId.ToString());
+                        AnnotationAutoLayoutDispatcherProbeCompleted(args);
+                    }
+                    state.State = state.Passed ? "COMPLETED" : "FAILED";
+                    state.CompletedUtc = DateTime.UtcNow;
+                    if (!state.Passed && string.IsNullOrEmpty(state.Error))
+                    {
+                        state.Error = "thread dispatch invariants failed";
+                    }
+                    WriteDispatcherProbeLog(
+                        state.Passed ? "PROBE_COMPLETE" : "PROBE_FAILED", state);
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (probeLock)
+                {
+                    state.Error = ex.Message;
+                    state.State = "FAILED";
+                    state.CompletedUtc = DateTime.UtcNow;
+                    WriteDispatcherProbeLog("PROBE_FAILED", state);
+                }
+            }
+        }
+
+        private static string GetSynchronizationContextName()
+        {
+            SynchronizationContext context = SynchronizationContext.Current;
+            return context == null ? "NULL" : context.GetType().FullName;
+        }
+
+        private static void WriteDispatcherProbeLog(
+            string eventName,
+            AnnotationAutoLayoutDispatcherProbeState state)
+        {
+            try
+            {
+                string directory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "AvevaIntegration");
+                Directory.CreateDirectory(directory);
+                string path = Path.Combine(directory, "dispatcher-probe.log");
+                File.AppendAllText(path,
+                    eventName + "|TIMESTAMP=" + DateTime.UtcNow.ToString("o") +
+                    "|THREAD_ID=" + Thread.CurrentThread.ManagedThreadId +
+                    "|IS_THREAD_POOL=" + Thread.CurrentThread.IsThreadPoolThread +
+                    "|OWNER_THREAD_ID=" + state.OwnerThreadId +
+                    "|SYNC_CONTEXT=" + GetSynchronizationContextName() +
+                    "|" + state.GetStatus() + Environment.NewLine,
+                    Encoding.UTF8);
+            }
+            catch
+            {
+                // Diagnostics must never cross the PMLNet boundary.
+            }
+        }
+
+        private static string GetWorkflowField(string key)
+        {
+            string status = autoLayoutWorkflow.Status();
+            string marker = key + "=";
+            int start = status.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+            {
+                return string.Empty;
+            }
+            start += marker.Length;
+            int end = status.IndexOf(" | ", start, StringComparison.Ordinal);
+            return end < 0
+                ? status.Substring(start)
+                : status.Substring(start, end - start);
+        }
+
+        internal bool HasCurrentDrawingOnOwnerThread()
+        {
+            autoLayoutDispatcher.VerifyOwnerThread();
+            using (MarDrafting drafting = new MarDrafting())
+            {
+                return drafting.DwgCurrent();
+            }
+        }
+
+        internal string GetCurrentDrawingIdentityOnOwnerThread()
+        {
+            autoLayoutDispatcher.VerifyOwnerThread();
+            using (MarDrafting drafting = new MarDrafting())
+            {
+                if (!drafting.DwgCurrent())
+                {
+                    return string.Empty;
+                }
+                return drafting.DwgNameGet();
+            }
+        }
+
+        internal void RepaintOnOwnerThread(string reason)
+        {
+            autoLayoutDispatcher.VerifyOwnerThread();
+            using (MarDrafting drafting = new MarDrafting())
+            {
+                drafting.DwgRepaint();
+            }
+        }
+
+        internal void PublishAnnotationAutoLayoutStatusOnOwnerThread(
+            string status,
+            string stage,
+            string batch,
+            string progress,
+            bool running,
+            bool terminal,
+            string error,
+            string drawing,
+            string runId)
+        {
+            autoLayoutDispatcher.VerifyOwnerThread();
+            if (AnnotationAutoLayoutStatusChanged == null)
+            {
+                return;
+            }
+            ArrayList args = new ArrayList();
+            args.Add(status ?? string.Empty);
+            args.Add(stage ?? string.Empty);
+            args.Add(batch ?? string.Empty);
+            args.Add(progress ?? string.Empty);
+            args.Add(running);
+            args.Add(terminal);
+            args.Add(error ?? string.Empty);
+            args.Add(drawing ?? string.Empty);
+            args.Add(runId ?? string.Empty);
+            AnnotationAutoLayoutStatusChanged(args);
+        }
+
+        internal static int[] GetAlgorithmPlanCounts(
+            string resultJsonPath)
+        {
+            BatchAlgorithmData batch = new BatchAlgorithmData();
+            LoadAllAlgorithmMoves(resultJsonPath, batch);
+            return new int[]
+            {
+                batch.MoveItems.Count,
+                batch.SkippedCount,
+                batch.JsonRecordCount
+            };
         }
 
         [PMLNetCallable()]
@@ -4187,6 +4651,11 @@ namespace AvevaIntegration
                         "source -11 LINE has incomplete endpoints";
                 }
 
+                if (string.IsNullOrEmpty(item.Failure))
+                {
+                    RecalculateLeaderEndFromFinalTextRectangle(item);
+                }
+
                 items.Add(item);
                 moveIndex++;
                 EnsureParserIndexAdvanced(oldMoveIndex, moveIndex);
@@ -5114,8 +5583,16 @@ namespace AvevaIntegration
             }
             detail = "hits=" + hits + " | contour=" + contourValid +
                 " | layer=" + layerValid + " | expected_layer_id=" +
-                expectedLayerId;
-            return hits >= 2 && contourValid && layerValid;
+                expectedLayerId +
+                " | identity_obscured_by_text=" +
+                (hits == 0 && contourValid && layerValid);
+            // GeometryIdentify may return the covering TEXT instead of the
+            // expected underline. The expected handle is still verified by
+            // its contour, length and layer; do not turn that identity
+            // occlusion into a false final-apply failure.
+            return (hits >= 2 ||
+                (hits == 0 && contourValid && layerValid)) &&
+                contourValid && layerValid;
         }
 
         private static OldLeaderAbsenceResult VerifyOldLeaderAbsentImmediately(
@@ -5388,16 +5865,46 @@ namespace AvevaIntegration
                         failedHandle.Length == 0)
                     {
                         failedHandle = item.Move.Data.Handle;
-                        failureDetail = finalAbsenceResult ==
-                            OldLeaderAbsenceResult.Inconclusive
-                            ? "old leader absence verification inconclusive | handle=" +
+                        if (finalAbsenceResult ==
+                            OldLeaderAbsenceResult.Present)
+                        {
+                            failureDetail =
+                                "OLD_LEADER | old leader still present | handle=" +
+                                failedHandle + " | final_detail=" +
+                                finalAbsenceDetail;
+                        }
+                        else if (finalAbsenceResult ==
+                            OldLeaderAbsenceResult.Inconclusive)
+                        {
+                            failureDetail =
+                                "OLD_LEADER | old leader absence verification inconclusive | handle=" +
                                 failedHandle +
                                 " | immediate_detail=" +
                                 item.ImmediateOldLeaderAbsenceDetail +
-                                " | final_detail=" + finalAbsenceDetail
-                            : "old leader absence verification failed | handle=" +
-                                failedHandle +
                                 " | final_detail=" + finalAbsenceDetail;
+                        }
+                        else if (!underlineValid)
+                        {
+                            failureDetail =
+                                "MOVED_UNDERLINE | moved underline verification failed | handle=" +
+                                failedHandle + " | final_detail=" +
+                                underlineDetail;
+                        }
+                        else if (!leaderValid)
+                        {
+                            failureDetail =
+                                "NEW_LEADER | new leader verification failed | handle=" +
+                                failedHandle + " | final_detail=" +
+                                leaderDetail;
+                        }
+                        else
+                        {
+                            failureDetail =
+                                "POST_VERIFY | final verification failed | handle=" +
+                                failedHandle + " | underline=" +
+                                underlineDetail + " | new_leader=" +
+                                leaderDetail;
+                        }
                     }
                 }
                 index++;
@@ -6038,6 +6545,9 @@ namespace AvevaIntegration
                             new DxfPoint(
                                 data.LeaderEnd[0],
                                 data.LeaderEnd[1])));
+                    writer.WriteLine(
+                        "  leader attachment=" +
+                        (item.LeaderAttachmentDetail ?? string.Empty));
                     writer.WriteLine("  matches=" +
                         (item.OriginalUnderlineDetail ?? string.Empty) +
                         " | " + (item.MovedUnderlineDetail ?? string.Empty) +
@@ -7039,6 +7549,83 @@ namespace AvevaIntegration
             }
         }
 
+        private static void RecalculateLeaderEndFromFinalTextRectangle(
+            AlgorithmAnnotationGeometryItem item)
+        {
+            List<DxfPoint> underlinePoints = NormalizeUnderlinePoints(
+                item.SourceUnderline.Vertices);
+            if (underlinePoints == null || underlinePoints.Count < 2)
+            {
+                item.LeaderAttachmentDetail =
+                    "LEADER_END_MODE=ORIGINAL_JSON|reason=underline unavailable";
+                return;
+            }
+
+            item.OriginalJsonLeaderEnd = new DxfPoint(
+                item.Move.Data.LeaderEnd[0],
+                item.Move.Data.LeaderEnd[1]);
+            GeometryPoint leaderStart = new GeometryPoint(
+                item.Move.Data.LeaderStart[0],
+                item.Move.Data.LeaderStart[1]);
+            OrientedTextRectangle rectangle;
+            if (!LeaderAttachmentGeometry.TryBuildFinalTextRectangleFromUnderline(
+                new GeometryPoint(
+                    underlinePoints[0].X,
+                    underlinePoints[0].Y),
+                new GeometryPoint(
+                    underlinePoints[1].X,
+                    underlinePoints[1].Y),
+                new GeometryPoint(
+                    item.Move.Data.OriginX,
+                    item.Move.Data.OriginY),
+                item.Move.Data.DeltaX,
+                item.Move.Data.DeltaY,
+                out rectangle))
+            {
+                item.LeaderAttachmentDetail =
+                    "LEADER_END_MODE=ORIGINAL_JSON|reason=text rectangle reconstruction unavailable";
+                return;
+            }
+
+            LeaderAttachmentResult attachment =
+                LeaderAttachmentGeometry.CalculateNearestTextRectangleAttachment(
+                    leaderStart,
+                    rectangle);
+            item.Move.Data.LeaderEnd = new double[]
+            {
+                attachment.Point.X,
+                attachment.Point.Y
+            };
+            item.LeaderAttachEdge = attachment.Edge.ToString().ToUpperInvariant();
+            item.FinalTextRectangle = rectangle;
+            item.HasFinalTextRectangle = true;
+            item.LeaderAttachmentDetail =
+                "LEADER_END_MODE=FINAL_TEXT_RECTANGLE_NEAREST_EDGE" +
+                "|leader_attach_edge=" + item.LeaderAttachEdge +
+                "|old_leader_end=" +
+                FormatPoint(item.OriginalJsonLeaderEnd) +
+                "|new_leader_end=" +
+                FormatPoint(new DxfPoint(
+                    attachment.Point.X,
+                    attachment.Point.Y)) +
+                "|text_bbox=" + FormatTextRectangle(rectangle);
+        }
+
+        private static string FormatTextRectangle(
+            OrientedTextRectangle rectangle)
+        {
+            return "[" +
+                rectangle.BottomLeft.X.ToString(CultureInfo.InvariantCulture) +
+                "," + rectangle.BottomLeft.Y.ToString(CultureInfo.InvariantCulture) +
+                ";" + rectangle.BottomRight.X.ToString(CultureInfo.InvariantCulture) +
+                "," + rectangle.BottomRight.Y.ToString(CultureInfo.InvariantCulture) +
+                ";" + rectangle.TopRight.X.ToString(CultureInfo.InvariantCulture) +
+                "," + rectangle.TopRight.Y.ToString(CultureInfo.InvariantCulture) +
+                ";" + rectangle.TopLeft.X.ToString(CultureInfo.InvariantCulture) +
+                "," + rectangle.TopLeft.Y.ToString(CultureInfo.InvariantCulture) +
+                "]";
+        }
+
         private sealed class BatchAlgorithmData
         {
             public readonly List<BatchMoveItem> AllItems;
@@ -7073,6 +7660,11 @@ namespace AvevaIntegration
             public DxfEntityInfo SourceText;
             public DxfEntityInfo SourceUnderline;
             public DxfEntityInfo SourceOldLeader;
+            public DxfPoint OriginalJsonLeaderEnd;
+            public OrientedTextRectangle FinalTextRectangle;
+            public bool HasFinalTextRectangle;
+            public string LeaderAttachEdge;
+            public string LeaderAttachmentDetail;
             public MarElementHandle OriginalUnderline;
             public MarElementHandle MovedUnderline;
             public MarElementHandle OldLeader;
